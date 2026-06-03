@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useSteppedVisualization } from "@/hooks/useSteppedVisualization";
 import { StepControls } from "@/components/visualizations/shared/step-controls";
 
-// ─── 节点定义（ViewBox 0 0 1280 580）──────────────────────────────────────
+// ─── 节点定义（ViewBox 0 0 1280 760）──────────────────────────────────────
 // 四行布局：顶行→中行（采样循环）→决策→分支
 // 行间距加大，节点加宽，字体加大到 18/14px
 interface NodeDef {
@@ -17,19 +17,19 @@ interface NodeDef {
 }
 
 const NODES: NodeDef[] = [
-  // ── 顶行 y=96
-  { id: "input",    label: "用户发来消息",             sublabel: "UserInput · submit_input()",              x: 110, y: 96,  w: 200, h: 62, color: "blue"   },
-  { id: "pre",      label: "检查 Token 预算",           sublabel: "run_pre_compact()",                       x: 378, y: 96,  w: 236, h: 62, color: "blue"   },
-  { id: "build",    label: "组装对话历史",              sublabel: "clone_history().for_prompt()",            x: 724, y: 96,  w: 296, h: 62, color: "blue"   },
-  // ── 中行 y=278（采样循环）
-  { id: "sampling", label: "向模型发请求（含重试）",    sublabel: "run_sampling_request()",                  x: 226, y: 278, w: 270, h: 62, color: "cyan"   },
-  { id: "stream",   label: "接收流式回复",              sublabel: "client_session.stream() · SSE",           x: 618, y: 278, w: 250, h: 62, color: "cyan"   },
-  { id: "inflight", label: "并行执行工具调用",          sublabel: "FuturesOrdered · 不阻塞流式接收",         x: 1004, y: 278, w: 232, h: 62, color: "orange" },
-  // ── 决策 y=432
-  { id: "follow",   label: "needs_follow_up?",          sublabel: "",                                        x: 640, y: 432, w: 280, h: 76, shape: "diamond", color: "yellow" },
-  // ── 分支 y=538
-  { id: "compact",  label: "压缩历史，继续循环",        sublabel: "run_auto_compact() · mid-turn",           x: 184, y: 538, w: 232, h: 60, color: "purple" },
-  { id: "done",     label: "本轮对话结束",              sublabel: "stop_hooks() → break",                   x: 1102, y: 538, w: 226, h: 60, color: "green"  },
+  // ── 顶行 y=110
+  { id: "input",    label: "用户发来消息",             sublabel: "UserInput · submit_input()",              x: 110, y: 110,  w: 200, h: 62, color: "blue"   },
+  { id: "pre",      label: "检查 Token 预算",           sublabel: "run_pre_compact()",                       x: 378, y: 110,  w: 236, h: 62, color: "blue"   },
+  { id: "build",    label: "组装对话历史",              sublabel: "clone_history().for_prompt()",            x: 724, y: 110,  w: 296, h: 62, color: "blue"   },
+  // ── 中行 y=360（采样循环）
+  { id: "sampling", label: "向模型发请求（含重试）",    sublabel: "run_sampling_request()",                  x: 226, y: 360, w: 270, h: 62, color: "cyan"   },
+  { id: "stream",   label: "接收流式回复",              sublabel: "client_session.stream() · SSE",           x: 618, y: 360, w: 250, h: 62, color: "cyan"   },
+  { id: "inflight", label: "并行执行工具调用",          sublabel: "FuturesOrdered · 不阻塞流式接收",         x: 1004, y: 360, w: 232, h: 62, color: "orange" },
+  // ── 决策 y=550
+  { id: "follow",   label: "needs_follow_up?",          sublabel: "",                                        x: 640, y: 550, w: 280, h: 76, shape: "diamond", color: "yellow" },
+  // ── 分支 y=690
+  { id: "compact",  label: "压缩历史，继续循环",        sublabel: "run_auto_compact() · mid-turn",           x: 184, y: 690, w: 232, h: 60, color: "purple" },
+  { id: "done",     label: "本轮对话结束",              sublabel: "stop_hooks() → break",                   x: 1102, y: 690, w: 226, h: 60, color: "green"  },
 ];
 
 const COLOR_MAP = {
@@ -169,12 +169,12 @@ function edgePath(fromId: string, toId: string): string {
 
   // build → sampling（下 → 左 → 下，跨两行）
   if (fromId === "build" && toId === "sampling") {
-    const mid = 170;
+    const mid = 220;
     return `M ${fx} ${fy+fh/2} L ${fx} ${mid} L ${tx} ${mid} L ${tx} ${ty-th/2}`;
   }
   // stream → follow（下 → 右微调 → 下到菱形顶点）
   if (fromId === "stream" && toId === "follow") {
-    const mid = 368;
+    const mid = 468;
     return `M ${fx} ${fy+fh/2} L ${fx} ${mid} L ${tx} ${mid} L ${tx} ${ty-th/2}`;
   }
   // inflight → follow（下 → 左 → 菱形右顶点）
@@ -192,12 +192,12 @@ function edgePath(fromId: string, toId: string): string {
   // compact → build（环回：上 → 左沿 x=22 → 上 → 右 → build 左边入）
   if (fromId === "compact" && toId === "build") {
     const lx = 22;
-    return `M ${fx} ${fy-fh/2} L ${lx} ${fy-fh/2} L ${lx} 22 L ${tx-tw/2} 22 L ${tx-tw/2} ${ty}`;
+    return `M ${fx} ${fy-fh/2} L ${lx} ${fy-fh/2} L ${lx} 18 L ${tx-tw/2} 18 L ${tx-tw/2} ${ty}`;
   }
   // follow → build（直接继续：右沿 x=1220 → 上 → build 右边入）
   if (fromId === "follow" && toId === "build") {
     const rx = 1220;
-    return `M ${fx+fw/2} ${fy} L ${rx} ${fy} L ${rx} 22 L ${tx+tw/2} 22 L ${tx+tw/2} ${ty}`;
+    return `M ${fx+fw/2} ${fy} L ${rx} ${fy} L ${rx} 18 L ${tx+tw/2} 18 L ${tx+tw/2} ${ty}`;
   }
   return `M ${fx} ${fy+fh/2} L ${tx} ${ty-th/2}`;
 }
@@ -225,9 +225,9 @@ export default function AgentLoopVisualization() {
         </div>
 
         <svg
-          viewBox="0 0 1280 580"
+          viewBox="0 0 1280 760"
           className="w-full rounded-md border border-zinc-800 bg-zinc-950"
-          style={{ maxHeight: "560px" }}
+          style={{ maxHeight: "740px" }}
         >
           <defs>
             {(["blue","cyan","yellow","purple","green","orange"] as const).map((c) => (
@@ -246,21 +246,21 @@ export default function AgentLoopVisualization() {
           </defs>
 
           {/* 外层 run_turn 框 */}
-          <motion.rect x="8" y="14" width="1264" height="558" rx="14"
+          <motion.rect x="8" y="14" width="1264" height="738" rx="14"
             fill="none" strokeDasharray="8 5" strokeWidth={2}
             animate={{ stroke: viz.currentStep >= 1 ? "#3b82f6" : "#3b82f655" }}
             transition={{ duration: 0.5 }} />
           {/* 背景遮住框线，避免文字与虚线重叠 */}
-          <rect x="14" y="18" width="440" height="22" fill="#09090b" />
-          <text x="22" y="35" fontSize={16} fontFamily="monospace" fill="#93c5fd">外层循环 run_turn()  — 控制整个 turn 的推进</text>
+          <rect x="14" y="14" width="440" height="22" fill="#09090b" />
+          <text x="22" y="30" fontSize={16} fontFamily="monospace" fill="#93c5fd">外层循环 run_turn()  — 控制整个 turn 的推进</text>
 
           {/* 内层 retry 框（覆盖 sampling + stream），上移并加高留出文字空间 */}
-          <motion.rect x="74" y="222" width="668" height="100" rx="10"
+          <motion.rect x="74" y="304" width="668" height="120" rx="10"
             fill="none" strokeDasharray="5 3" strokeWidth={1.8}
             animate={{ stroke: an.includes("sampling") || an.includes("stream") ? "#06b6d4" : "#06b6d488" }}
             transition={{ duration: 0.4 }} />
-          <rect x="78" y="214" width="534" height="18" fill="#09090b" />
-          <text x="82" y="228" fontSize={16} fontFamily="monospace" fill="#a5f3fc">内层重试循环 run_sampling_request()  — 网络失败自动重试</text>
+          <rect x="78" y="296" width="534" height="18" fill="#09090b" />
+          <text x="82" y="312" fontSize={16} fontFamily="monospace" fill="#a5f3fc">内层重试循环 run_sampling_request()  — 网络失败自动重试</text>
 
           {/* ── 边 ── */}
           {[
@@ -295,15 +295,15 @@ export default function AgentLoopVisualization() {
                      x={
                       from === "compact"                      ? 90   :
                       from === "follow" && to === "done"      ? 944  :
-                      from === "follow" && to === "build"     ? 1220 :
+                      from === "follow" && to === "build"     ? 1178 :
                       from === "follow"                       ? 346  :
                       from === "stream" && to === "inflight"  ? 816  :
                       (getNode(from).x + getNode(to).x) / 2
                     }
                     y={
-                      from === "compact"                      ? 345  :
-                      from === "follow" && to === "build"     ? 260  :
-                      from === "follow"                       ? 422  :
+                      from === "compact"                      ? 462  :
+                      from === "follow" && to === "build"     ? 340  :
+                      from === "follow"                       ? 540  :
                       from === "stream" && to === "inflight"  ? 264  :
                       (getNode(from).y + getNode(to).y) / 2 - 6
                     }
@@ -371,8 +371,8 @@ export default function AgentLoopVisualization() {
           <AnimatePresence>
             {an.includes("inflight") && (
               <motion.g initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
-                <rect x={840} y={228} width={224} height={28} rx={5} fill="#431407" stroke="#f97316" strokeWidth={1.2} />
-                <text x={952} y={248} textAnchor="middle" fontSize={16} fontFamily="monospace" fill="#f97316">
+                <rect x={840} y={310} width={224} height={28} rx={5} fill="#431407" stroke="#f97316" strokeWidth={1.2} />
+                <text x={952} y={330} textAnchor="middle" fontSize={16} fontFamily="monospace" fill="#f97316">
                   工具与流式回复同时进行
                 </text>
               </motion.g>
@@ -383,8 +383,8 @@ export default function AgentLoopVisualization() {
           <AnimatePresence>
             {viz.currentStep >= 10 && (
               <motion.g initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                <rect x={26} y={40} width={100} height={28} rx={5} fill="#2e1065" stroke="#a855f7" strokeWidth={1.2} />
-                <text x={76} y={58} textAnchor="middle" fontSize={15} fontFamily="monospace" fill="#a855f7">外层第2轮</text>
+                <rect x={26} y={50} width={100} height={28} rx={5} fill="#2e1065" stroke="#a855f7" strokeWidth={1.2} />
+                <text x={76} y={68} textAnchor="middle" fontSize={15} fontFamily="monospace" fill="#a855f7">外层第2轮</text>
               </motion.g>
             )}
           </AnimatePresence>
