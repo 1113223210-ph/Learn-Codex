@@ -4,7 +4,7 @@ import { useState, useEffect, createContext, useContext } from "react";
 import type { Locale } from "./i18n";
 
 const LocaleContext = createContext<{ locale: Locale; setLocale: (l: Locale) => void }>({
-  locale: "en",
+  locale: "zh",
   setLocale: () => {},
 });
 
@@ -13,13 +13,15 @@ export function useLocale() {
 }
 
 export function LocaleProvider({ children }: { children: React.ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>("en");
+  const [locale, setLocaleState] = useState<Locale>("zh");
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem("locale") as Locale | null;
     if (saved === "en" || saved === "zh") {
       setLocaleState(saved);
+    } else {
+      setLocaleState("zh");
     }
     setMounted(true);
   }, []);
@@ -31,7 +33,7 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
 
   // 防止 hydration 不匹配，未挂载时返回默认（en）
   return (
-    <LocaleContext.Provider value={{ locale: mounted ? locale : "en", setLocale }}>
+    <LocaleContext.Provider value={{ locale: mounted ? locale : "zh", setLocale }}>
       {children}
     </LocaleContext.Provider>
   );

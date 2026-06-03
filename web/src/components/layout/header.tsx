@@ -7,11 +7,10 @@ import { useLocale } from "@/lib/locale-context";
 import { UI_TEXT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-// 语言切换已移除，仅中文
 
 export function Header() {
   const pathname = usePathname();
-  const { locale } = useLocale();
+  const { locale, setLocale } = useLocale();
   const t = UI_TEXT[locale];
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -70,6 +69,14 @@ export function Header() {
               </Link>
             );
           })}
+
+          {/* 语言切换 */}
+          <button
+            onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+            className="rounded-md px-3 py-1.5 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
+          >
+            {locale === "zh" ? "EN" : "中文"}
+          </button>
 
           {/* 分隔线 + 外链 */}
           <div className="ml-2 flex items-center gap-0.5 border-l border-zinc-800 pl-2">
@@ -138,8 +145,14 @@ export function Header() {
             {/* 分隔线 */}
             <div className="my-3 border-t border-zinc-800" />
 
-            {/* 外链 */}
+            {/* 语言切换 + 外链 */}
             <div className="flex items-center gap-3 px-4">
+              <button
+                onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+                className="rounded-md px-3 py-2 text-sm font-medium text-zinc-400 transition-colors hover:text-white"
+              >
+                {locale === "zh" ? "EN" : "中文"}
+              </button>
               <a
                 href="https://github.com/1113223210-ph/Learn-Codex"
                 target="_blank"
