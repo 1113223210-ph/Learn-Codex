@@ -5,6 +5,8 @@
 > OpenAI Codex 有 662,000 行 Rust 代码、1000+ 文件、6 个核心 crate。  
 > 这 13 章带你从 Agent 循环到工程全貌，逐层拆解 Rust 实现。
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-learn--codex.pages.dev-blue?style=for-the-badge&logo=cloudflare)](https://learn-codex.pages.dev)
+
 ---
 
 ## 项目简介
@@ -72,6 +74,8 @@ learn-codex/
 
 > OpenAI Codex has 662,000 lines of Rust code, 1,000+ files, and 6 core crates.  
 > These 13 chapters walk you through the Rust implementation layer by layer, from the Agent loop to the full engineering picture.
+
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-learn--codex.pages.dev-blue?style=for-the-badge&logo=cloudflare)](https://learn-codex.pages.dev)
 
 ### About
 
