@@ -68,6 +68,16 @@ learn-codex/
 - **动画**：Framer Motion
 - **语言**：TypeScript
 
+
+## 🙏 致谢
+
+本项目的诞生离不开以下开源项目：
+
+- **[openai/codex](https://github.com/openai/codex)** — 本项目解析的 Rust 开源源码，662,000 行工程实现
+- **[Deep Dive Claude Code](https://github.com/waiterxiaoyy/Deep-Dive-Claude-Code)** — 交互式 Agent 教学项目，本项目 Web 学习平台（步进可视化 + Agent 模拟器）的交互模式受其启发
+
+感谢以上项目的作者和贡献者！
+
 ---
 
 ## English
@@ -91,3 +101,10 @@ npm install
 npm run dev
 # Visit http://localhost:3200
 ```
+
+### Acknowledgements
+
+- **[openai/codex](https://github.com/openai/codex)** — The open-source Rust codebase this project is built around, 662,000 lines of production engineering
+- **[Deep Dive Claude Code](https://github.com/waiterxiaoyy/Deep-Dive-Claude-Code)** — Interactive Agent teaching project that inspired the step-by-step visualization and simulator format
+
+Thanks to the authors and contributors of the above projects!
