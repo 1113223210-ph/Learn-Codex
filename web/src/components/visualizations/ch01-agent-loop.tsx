@@ -18,9 +18,9 @@ interface NodeDef {
 
 const NODES: NodeDef[] = [
   // ── 顶行 y=110
-  { id: "input",    label: "用户发来消息",             sublabel: "UserInput · submit_input()",              x: 110, y: 110,  w: 200, h: 62, color: "blue"   },
-  { id: "pre",      label: "检查 Token 预算",           sublabel: "run_pre_compact()",                       x: 378, y: 110,  w: 236, h: 62, color: "blue"   },
-  { id: "build",    label: "组装对话历史",              sublabel: "clone_history().for_prompt()",            x: 724, y: 110,  w: 296, h: 62, color: "blue"   },
+  { id: "input",    label: "用户发来消息",             sublabel: "UserInput · submit_input()",              x: 360, y: 110,  w: 200, h: 62, color: "blue"   },
+  { id: "pre",      label: "检查 Token 预算",           sublabel: "run_pre_compact()",                       x: 620, y: 110,  w: 236, h: 62, color: "blue"   },
+  { id: "build",    label: "组装对话历史",              sublabel: "clone_history().for_prompt()",            x: 940, y: 110,  w: 296, h: 62, color: "blue"   },
   // ── 中行 y=360（采样循环）
   { id: "sampling", label: "向模型发请求（含重试）",    sublabel: "run_sampling_request()",                  x: 226, y: 360, w: 270, h: 62, color: "cyan"   },
   { id: "stream",   label: "接收流式回复",              sublabel: "client_session.stream() · SSE",           x: 618, y: 360, w: 250, h: 62, color: "cyan"   },
@@ -28,8 +28,8 @@ const NODES: NodeDef[] = [
   // ── 决策 y=550
   { id: "follow",   label: "needs_follow_up?",          sublabel: "",                                        x: 640, y: 550, w: 280, h: 76, shape: "diamond", color: "yellow" },
   // ── 分支 y=690
-  { id: "compact",  label: "压缩历史，继续循环",        sublabel: "run_auto_compact() · mid-turn",           x: 184, y: 690, w: 232, h: 60, color: "purple" },
-  { id: "done",     label: "本轮对话结束",              sublabel: "stop_hooks() → break",                   x: 1102, y: 690, w: 226, h: 60, color: "green"  },
+  { id: "compact",  label: "压缩历史，继续循环",        sublabel: "run_auto_compact() · mid-turn",           x: 1102, y: 690, w: 232, h: 60, color: "purple" },
+  { id: "done",     label: "本轮对话结束",              sublabel: "stop_hooks() → break",                   x: 184, y: 690, w: 226, h: 60, color: "green"  },
 ];
 
 const COLOR_MAP = {
@@ -181,18 +181,18 @@ function edgePath(fromId: string, toId: string): string {
   if (fromId === "inflight" && toId === "follow") {
     return `M ${fx} ${fy+fh/2} L ${fx} ${ty} L ${tx+tw/2} ${ty}`;
   }
-  // follow → compact（菱形左顶 → 左 → 下）
-  if (fromId === "follow" && toId === "compact") {
+  // follow → done（菱形左顶 → 左 → 下，done 现在在左侧）
+  if (fromId === "follow" && toId === "done") {
     return `M ${fx-fw/2} ${fy} L ${tx} ${fy} L ${tx} ${ty-th/2}`;
   }
-  // follow → done（菱形右顶 → 右 → 下）
-  if (fromId === "follow" && toId === "done") {
+  // follow → compact（菱形右顶 → 右 → 下，compact 现在在右侧）
+  if (fromId === "follow" && toId === "compact") {
     return `M ${fx+fw/2} ${fy} L ${tx} ${fy} L ${tx} ${ty-th/2}`;
   }
-  // compact → build（环回：上 → 左沿 x=22 → 上 → 右 → build 左边入）
+  // compact → build（环回：右沿 x=1220 → 上 → build 右边入，与 follow→build 共线）
   if (fromId === "compact" && toId === "build") {
-    const lx = 22;
-    return `M ${fx} ${fy-fh/2} L ${lx} ${fy-fh/2} L ${lx} 18 L ${tx-tw/2} 18 L ${tx-tw/2} ${ty}`;
+    const rx = 1220;
+    return `M ${fx} ${fy-fh/2} L ${rx} ${fy-fh/2} L ${rx} 18 L ${tx+tw/2} 18 L ${tx+tw/2} ${ty}`;
   }
   // follow → build（直接继续：右沿 x=1220 → 上 → build 右边入）
   if (fromId === "follow" && toId === "build") {
@@ -293,15 +293,16 @@ export default function AgentLoopVisualization() {
                 {label && active && (
                   <motion.text
                      x={
-                      from === "compact"                      ? 90   :
-                      from === "follow" && to === "done"      ? 944  :
+                      from === "compact"                      ? 1160 :
+                      from === "follow" && to === "done"      ? 346  :
                       from === "follow" && to === "build"     ? 1178 :
-                      from === "follow"                       ? 346  :
+                      from === "follow" && to === "compact"   ? 944  :
+                      from === "follow"                       ? 540  :
                       from === "stream" && to === "inflight"  ? 816  :
                       (getNode(from).x + getNode(to).x) / 2
                     }
                     y={
-                      from === "compact"                      ? 462  :
+                      from === "compact"                      ? 430  :
                       from === "follow" && to === "build"     ? 340  :
                       from === "follow"                       ? 540  :
                       from === "stream" && to === "inflight"  ? 264  :
