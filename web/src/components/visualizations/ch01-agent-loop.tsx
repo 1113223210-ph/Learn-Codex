@@ -52,6 +52,7 @@ const ACTIVE_NODES: string[][] = [
   ["stream", "inflight"],
   ["inflight"],
   ["follow"],
+  ["follow", "build"],
   ["compact", "build"],
   ["done"],
 ];
@@ -67,6 +68,7 @@ const ACTIVE_EDGES: string[][] = [
   ["stream->inflight"],
   ["inflight->follow"],
   ["stream->follow"],
+  ["follow->build"],
   ["follow->compact", "compact->build"],
   ["follow->done"],
 ];
@@ -109,6 +111,14 @@ const EVENTS: string[][] = [
     "  }",
   ],
   [
+    "SamplingRequestResult {",
+    "  needs_follow_up: true,",
+    "}",
+    "// total_usage_tokens < auto_compact_limit",
+    "// → no compaction needed",
+    "// continue  →  直接回到 clone_history()",
+  ],
+  [
     "// total_usage_tokens >= auto_compact_limit",
     "// → CompactionReason::ContextLimit",
     "run_auto_compact(...).await",
@@ -136,6 +146,7 @@ const STEP_INFO = [
   { title: "FunctionCall → FuturesOrdered（非阻塞并行）", desc: "OutputItemDone(FunctionCall) 时，Codex 不等待工具结果——直接 in_flight.push_back(tool_future)。工具与后续 SSE 事件并行执行，这是 Codex 的关键性能设计。", file: "turn.rs:1955" },
   { title: "FuturesOrdered 收割结果", desc: "in_flight: FuturesOrdered<BoxFuture<CodexResult<ResponseInputItem>>>，按提交顺序依次完成。多个工具调用真正并发，结果写回 history 供下次采样使用。", file: "turn.rs:1859" },
   { title: "needs_follow_up 决策", desc: "Completed 后返回 SamplingRequestResult。needs_follow_up = true 表示本次有工具调用（结果需回传给模型）或 session 有 pending_input。", file: "turn.rs:466" },
+  { title: "needs_follow_up=true · token 未超限 → 直接继续", desc: "token 用量未达 auto_compact_limit 时，直接 continue 进入下一轮外层循环，跳过压缩。工具结果已写入 history，下轮 clone_history() 会包含它。", file: "turn.rs:506" },
   { title: "Token limit → auto_compact → continue", desc: "total_usage_tokens >= auto_compact_limit 且 needs_follow_up 时，mid-turn 触发 run_auto_compact(CompactionReason::ContextLimit)，压缩后 reset WebSocket session，continue 继续外层循环。", file: "turn.rs:492" },
   { title: "end_turn → stop_hooks → break", desc: "needs_follow_up = false 时，运行 hooks().run_stop()。stop hook 可注入新提示使循环继续，否则 break 出外层循环，turn 完成。", file: "turn.rs:510" },
 ];
@@ -183,12 +194,17 @@ function edgePath(fromId: string, toId: string): string {
     const lx = 22;
     return `M ${fx} ${fy-fh/2} L ${lx} ${fy-fh/2} L ${lx} 22 L ${tx-tw/2} 22 L ${tx-tw/2} ${ty}`;
   }
+  // follow → build（直接继续：右沿 x=1220 → 上 → build 右边入）
+  if (fromId === "follow" && toId === "build") {
+    const rx = 1220;
+    return `M ${fx+fw/2} ${fy} L ${rx} ${fy} L ${rx} 22 L ${tx+tw/2} 22 L ${tx+tw/2} ${ty}`;
+  }
   return `M ${fx} ${fy+fh/2} L ${tx} ${ty-th/2}`;
 }
 
 // ─── 主组件 ────────────────────────────────────────────────────────────────
 export default function AgentLoopVisualization() {
-  const viz = useSteppedVisualization({ totalSteps: 12, autoPlayInterval: 2800 });
+  const viz = useSteppedVisualization({ totalSteps: 13, autoPlayInterval: 2800 });
   const an = ACTIVE_NODES[viz.currentStep];
   const ae = ACTIVE_EDGES[viz.currentStep];
   const step = STEP_INFO[viz.currentStep];
@@ -255,7 +271,8 @@ export default function AgentLoopVisualization() {
             { from: "stream",   to: "inflight", label: "收到工具调用" },
             { from: "inflight", to: "follow",   label: "" },
             { from: "stream",   to: "follow",   label: "" },
-            { from: "follow",   to: "compact",  label: "true · Token 超限" },
+            { from: "follow",   to: "compact",  label: "true · token 超限" },
+            { from: "follow",   to: "build",    label: "true · token 未超限" },
             { from: "follow",   to: "done",     label: "false · end_turn" },
             { from: "compact",  to: "build",    label: "继续下一轮" },
           ].map(({ from, to, label }) => {
@@ -278,12 +295,14 @@ export default function AgentLoopVisualization() {
                      x={
                       from === "compact"                      ? 90   :
                       from === "follow" && to === "done"      ? 944  :
+                      from === "follow" && to === "build"     ? 1220 :
                       from === "follow"                       ? 346  :
                       from === "stream" && to === "inflight"  ? 816  :
                       (getNode(from).x + getNode(to).x) / 2
                     }
                     y={
                       from === "compact"                      ? 345  :
+                      from === "follow" && to === "build"     ? 260  :
                       from === "follow"                       ? 422  :
                       from === "stream" && to === "inflight"  ? 264  :
                       (getNode(from).y + getNode(to).y) / 2 - 6
