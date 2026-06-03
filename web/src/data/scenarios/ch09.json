@@ -1,0 +1,85 @@
+{
+  "version": "ch09",
+  "title": {
+    "zh": "长期记忆系统 — core/src/memories/",
+    "en": "Long-Term Memory System — core/src/memories/"
+  },
+  "description": {
+    "zh": "模拟 Codex 长期记忆的完整生命周期：Session 启动触发后台管道 → Phase1 per-rollout LLM 提取（stage_one_system.md 569行）→ SQLite stage1_outputs 持久化 → Phase2 全局整合 SubAgent（consolidation.md 835行）→ read_path.md 每轮注入 → <oai-mem-citation> 引用追踪 → usage_count 反馈选择。",
+    "en": "Simulate Codex long-term memory full lifecycle: session start triggers pipeline → Phase1 per-rollout LLM extraction (stage_one_system.md 569 lines) → SQLite stage1_outputs persistence → Phase2 global consolidation SubAgent (consolidation.md 835 lines) → read_path.md per-turn injection → <oai-mem-citation> citation tracking → usage_count feedback selection."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// session.rs:836 — 会话初始化后立即启动后台任务\nmemories::start_memories_startup_task(\n  &sess,\n  Arc::clone(&config),\n  &session_configuration.session_source,\n);\n\n// start.rs:19 — 三个跳过条件：\nif config.ephemeral\n    || !config.features.enabled(Feature::MemoryTool)  // key=\"memories\"\n    || matches!(source, SessionSource::SubAgent(_))\n{\n    return; // 跳过：临时会话 / 未启用 / SubAgent\n}\nif session.services.state_db.is_none() {\n    warn!(\"state db unavailable; skipping\");\n    return; // 跳过：需要 Feature::Sqlite\n}\n\n// 后台异步任务（不阻塞主会话）：\ntokio::spawn(async move {\n    phase1::prune(&session, &config).await;  // 清理过期 stage1_outputs\n    phase1::run(&session, &config).await;    // Phase1 提取\n    phase2::run(&session, config).await;     // Phase2 整合\n});",
+      "annotation": {
+        "zh": "session.rs:836 — start_memories_startup_task() 是整个长期记忆系统的唯一入口。后台异步执行，按顺序：prune 清理 → Phase1 提取 → Phase2 整合。Feature::MemoryTool (key='memories') 和 Feature::Sqlite 必须都启用。",
+        "en": "session.rs:836 — start_memories_startup_task() is the sole entry to the entire long-term memory system. Runs async in background, in order: prune cleanup → Phase1 extraction → Phase2 consolidation. Feature::MemoryTool and Feature::Sqlite must both be enabled."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// phase1.rs:196 — claim_startup_jobs()\n// 扫描 SQLite threads 表，争抢 Stage1 jobs\nstate_db.claim_stage1_jobs_for_startup(\n    session.conversation_id,  // 排除自身\n    Stage1StartupClaimParams {\n        scan_limit:             5_000,\n        max_claimed:            16,   // max_rollouts_per_startup\n        max_age_days:           30,   // max_rollout_age_days\n        min_rollout_idle_hours: 6,    // 闲置 ≥6h\n        allowed_sources:        INTERACTIVE_SESSION_SOURCES,\n        lease_seconds:          3_600,\n    },\n).await\n\n// SQL 条件（简化）：\n// WHERE memory_mode = 'enabled'\n//   AND id != current_session_id\n//   AND updated_at_ms >= (now - 30days)\n//   AND updated_at_ms <= (now - 6hours)   -- 闲置\n//   AND stage1_outputs.source_updated_at < threads.updated_at  -- 过期\n// ORDER BY updated_at_ms DESC\n// LIMIT 5000\n\n// 返回：≤16 个 Stage1JobClaim { thread, ownership_token }",
+      "annotation": {
+        "zh": "claim_startup_jobs() 通过 BEGIN IMMEDIATE 事务安全争抢。6小时闲置条件防止干扰正在进行的会话。ownership_token 是 UUID v4，持有者才能标记 job 完成。",
+        "en": "claim_startup_jobs() safely claims via BEGIN IMMEDIATE transactions. 6-hour idle condition prevents interference with active sessions. ownership_token is UUID v4 — only holder can mark job complete."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// phase1.rs:312 — job::sample() — 每个 job 并发执行（上限 8）\n\n// Step 1: 加载 rollout .jsonl\nlet (rollout_items, _, _) =\n    RolloutRecorder::load_rollout_items(&thread.rollout_path).await?;\n\n// Step 2: 过滤 rollout 内容\n// - 去掉 developer role 消息（系统指令）\n// - 去掉 memory-excluded contextual 片段\n// - 保留 user/assistant/tool 消息\nlet rollout_contents =\n    serialize_filtered_rollout_response_items(&rollout_items)?;\n// 注意：内容经过 redact_secrets() 脱敏处理\n\n// Step 3: 构建用户消息（截断）\n// stage_one_input.md 模板：\n// \"Analyze this rollout and produce JSON with\n//  raw_memory, rollout_summary, rollout_slug.\"\n// rollout_path: /home/user/.codex/rollouts/xxx.jsonl\n// rollout_cwd: /workspace/auth\n// rollout_contents: [截断到 70% context window]\nlet msg = build_stage_one_input_message(\n    &model_info, &thread.rollout_path,\n    &thread.cwd, &rollout_contents)?;\n// rollout_token_limit = model.context_window\n//   * effective_context_window_percent / 100\n//   * CONTEXT_WINDOW_PERCENT(70) / 100\n// 兜底: DEFAULT_STAGE_ONE_ROLLOUT_TOKEN_LIMIT = 150_000",
+      "annotation": {
+        "zh": "Phase1 LLM 调用使用结构化输出 JSON schema，强制模型输出 {raw_memory, rollout_summary, rollout_slug}。系统提示是 stage_one_system.md（569行），包含 Memory Writing Agent 规范、高信号记忆定义、NO-OP 规则。",
+        "en": "Phase1 LLM call uses structured output JSON schema, forcing model to output {raw_memory, rollout_summary, rollout_slug}. System prompt is stage_one_system.md (569 lines) with Memory Writing Agent spec, high-signal memory definition, NO-OP rules."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// phase1.rs — 调用模型\nlet prompt = Prompt {\n    input: vec![ResponseItem::Message { role: \"user\", content: [msg], .. }],\n    tools: vec![],  // 无工具！纯文本提取\n    base_instructions: BaseInstructions {\n        text: phase_one::PROMPT.to_string(),  // stage_one_system.md\n    },\n    output_schema: Some(json!({\n        \"type\": \"object\",\n        \"properties\": {\n            \"rollout_summary\": { \"type\": \"string\" },\n            \"rollout_slug\":    { \"type\": [\"string\", \"null\"] },\n            \"raw_memory\":      { \"type\": \"string\" }\n        },\n        \"required\": [\"rollout_summary\", \"rollout_slug\", \"raw_memory\"],\n        \"additionalProperties\": false\n    })),\n    ..\n};\n// 模型: gpt-5.4-mini, ReasoningEffort::Low\n// 流式消费 SSE，提取最终 JSON 文本\n\n// 脱敏处理：\noutput.raw_memory = redact_secrets(output.raw_memory);\noutput.rollout_summary = redact_secrets(output.rollout_summary);\noutput.rollout_slug = output.rollout_slug.map(redact_secrets);\n\n// NO-OP 检测：\nif output.raw_memory.is_empty() || output.rollout_summary.is_empty() {\n    // 标记成功但无输出\n    state_db.mark_stage1_job_succeeded_no_output(...).await?;\n    return JobOutcome::SucceededNoOutput;\n}",
+      "annotation": {
+        "zh": "Phase1 调用无工具（tools: vec![]），是纯粹的文本分析。结构化输出 schema 防止模型输出格式错误。NO-OP 逻辑：若模型判断 rollout 无值得保存的内容，返回空字段，标记 SucceededNoOutput 而非失败。",
+        "en": "Phase1 call has no tools (tools: vec![]), pure text analysis. Structured output schema prevents malformed output. NO-OP logic: if model judges rollout has nothing worth saving, returns empty fields, marked as SucceededNoOutput not failure."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// phase1.rs — result::success() — 持久化成功结果\nstate_db.mark_stage1_job_succeeded(\n    thread.id,\n    &claim.ownership_token,\n    thread.updated_at.timestamp(),\n    &output.raw_memory,\n    &output.rollout_summary,\n    output.rollout_slug.as_deref(),\n).await?\n// 内部 SQL（简化）：\n// 1. UPDATE jobs SET status='done', last_success_watermark=input_watermark\n//    WHERE kind='memory_stage1' AND job_key=thread_id AND ownership_token=?\n// 2. INSERT INTO stage1_outputs (...) ON CONFLICT(thread_id) DO UPDATE\n//    WHERE excluded.source_updated_at >= stage1_outputs.source_updated_at\n// 3. enqueue_global_consolidation(source_updated_at)\n//    → UPSERT jobs SET kind='memory_consolidate_global', job_key='global'\n//      input_watermark = MAX(current, new)\n\n// stage1_outputs 表结构：\n// thread_id, rollout_path, source_updated_at,\n// raw_memory, rollout_summary, rollout_slug, generated_at,\n// selected_for_phase2, selected_for_phase2_source_updated_at,\n// usage_count, last_usage",
+      "annotation": {
+        "zh": "持久化是原子的：jobs 更新 + stage1_outputs upsert + Phase2 enqueue 在同一个事务中。enqueue_global_consolidation 自动推进 input_watermark，保证下次 Phase2 能感知到变化。",
+        "en": "Persistence is atomic: jobs update + stage1_outputs upsert + Phase2 enqueue in same transaction. enqueue_global_consolidation advances input_watermark automatically, ensuring next Phase2 detects the change."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// phase2.rs:46 — run() — 全局整合流程\n\n// Step 1: 争抢全局单例 job\nstate_db.try_claim_global_phase2_job(\n    session.conversation_id,\n    JOB_LEASE_SECONDS,  // 3_600s\n).await?\n// Claimed { ownership_token, input_watermark } → 继续\n// SkippedNotDirty → input_watermark <= last_success_watermark\n// SkippedRunning  → 另一 worker 持有有效 lease\n\n// Step 2: 构建 SubAgent 配置\n// agent_config.cwd = ~/.codex/memories/\n// agent_config.memories.generate_memories = false  // 禁递归\n// agent_config.permissions.approval_policy = Never\n// Feature::SpawnCsv / Collab / MemoryTool 全部 disable\n// sandbox: WorkspaceWrite { writable_roots: [codex_home], network_access: false }\n// model: gpt-5.4, reasoning_effort: Medium\n\n// Step 3: 查询 Phase2 输入\nlet selection = state_db.get_phase2_input_selection(\n    max_raw_memories,  // default 256\n    max_unused_days,   // default 30\n).await?\n// 返回: { selected, previous_selected, retained_thread_ids, removed }",
+      "annotation": {
+        "zh": "Phase2 是全系统单例 (job_key='global')。get_phase2_input_selection 计算完整的增量 diff：selected（当前选中）、retained（与上次相同）、removed（被删除）。这个 diff 会传给 consolidation agent。",
+        "en": "Phase2 is system-wide singleton (job_key='global'). get_phase2_input_selection computes full incremental diff: selected (current), retained (same as last run), removed (deleted). This diff is passed to the consolidation agent."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// phase2.rs — 同步 FS + Spawn Agent\n\n// Step 4: 同步文件系统（在 spawn 之前）\nsync_rollout_summaries_from_memories(\n    &root, &artifact_memories, max_raw_memories).await?;\n// → 写入/删除 ~/.codex/memories/rollout_summaries/*.md\n// 文件名: {YYYY-MM-DDTHH-MM-SS}-{4char-base62-hash}[-slug].md\n// 例: 2026-05-29T10-30-00-3aB9-auth_module_refactor.md\n\nrebuild_raw_memories_file_from_memories(\n    &root, &artifact_memories, max_raw_memories).await?;\n// → 重写 ~/.codex/memories/raw_memories.md\n// 格式: ## Thread `{thread_id}`\\nupdated_at: ...\\ncwd: ...\\n{raw_memory}\n\n// Step 5: 构建 consolidation prompt\n// consolidation.md (835行) 渲染：\n//   {{ memory_root }} = ~/.codex/memories/\n//   {{ phase2_input_selection }} = diff 文本\n//   {{ memory_extensions_folder_structure }} = 如果有 extensions\n\n// Step 6: Spawn SubAgent\nlet thread_id = session.services.agent_control\n    .spawn_agent(agent_config, prompt.into(),\n        Some(SessionSource::SubAgent(\n            SubAgentSource::MemoryConsolidation))).await?;\n\n// Step 7: Heartbeat 循环（tokio::spawn 异步）\n// 每 90s 调用 state_db.heartbeat_global_phase2_job()\n// → UPDATE jobs SET lease_until = now + 3600\n// 若 heartbeat 失败 → Errored",
+      "annotation": {
+        "zh": "Phase2 先同步 FS 再 spawn agent，确保 agent 启动时已有最新的 raw_memories.md 和 rollout_summaries/。consolidation.md 的 INCREMENTAL UPDATE 模式让 agent 只处理 diff 部分，而非重新整合全部历史。",
+        "en": "Phase2 syncs FS before spawning agent, so agent starts with latest raw_memories.md and rollout_summaries/. consolidation.md INCREMENTAL UPDATE mode makes agent only process diff, not re-consolidate entire history."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// core/src/codex.rs:2366 — 每个 turn 注入 developer instructions\nif turn_context.features.enabled(Feature::MemoryTool)\n    && turn_context.config.memories.use_memories  // default true\n    && let Some(memory_prompt) =\n        build_memory_tool_developer_instructions(\n            &turn_context.config.codex_home).await\n{\n    developer_sections.push(memory_prompt);\n}\n\n// prompts.rs:265 — build_memory_tool_developer_instructions()\n// 1. 读取 ~/.codex/memories/memory_summary.md\n// 2. 截断到 5_000 tokens\n// 3. 渲染 read_path.md 模板：\n//    - memory 文件布局说明\n//    - Quick Memory Pass 协议（≤4-6 步）\n//    - 如何判断是否需要查记忆\n//    - drift 验证决策树\n//    - Memory Citation 格式要求\n//    - === MEMORY_SUMMARY BEGINS ===\n//    - {{ memory_summary }} 内容\n//    - === MEMORY_SUMMARY ENDS ===\n\n// 条件：memory_summary.md 存在且非空才注入\n// 每轮重新构建（per-turn），Phase2 更新后立即生效",
+      "annotation": {
+        "zh": "注入是 per-turn 的，每次采样前重新构建 developer instructions。read_path.md（129行）规定了 Quick Memory Pass 协议（≤4-6 步），防止 agent 过度扫描记忆文件。memory_summary.md 内容直接嵌入，不需要 agent 打开文件。",
+        "en": "Injection is per-turn, rebuilt before each sampling. read_path.md (129 lines) defines Quick Memory Pass protocol (≤4-6 steps), preventing agent from over-scanning memory files. memory_summary.md content is embedded inline, no file open needed."
+      }
+    },
+    {
+      "type": "assistant_text",
+      "content": "根据记忆，认证模块在 3 月份重构时将 OAuth 回调路径从 /auth/callback 改为 /api/auth/callback，且密码哈希已从 bcrypt 迁移到 argon2。我将直接使用新路径。\n\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:48-52|note=[auth module refactor — OAuth callback path change]\nrollout_summaries/2026-03-15T14-22-00-7cF2-auth_module_refactor.md:10-14|note=[argon2 migration evidence]\n</citation_entries>\n<rollout_ids>\n019c6e27-e55b-73d1-87d8-4e01f1f75043\n</rollout_ids>\n</oai-mem-citation>",
+      "annotation": {
+        "zh": "模型使用了 MEMORY.md 和 rollout_summaries/ 中的记忆，在回复末尾附上 <oai-mem-citation> 块。citations.rs 解析后调用 record_stage1_output_usage()，usage_count+1，影响下次 Phase2 的选择排序。",
+        "en": "Model used MEMORY.md and rollout_summaries/ memories, appended <oai-mem-citation> block at end of reply. citations.rs parses it and calls record_stage1_output_usage(), usage_count+1, affecting next Phase2 selection ordering."
+      }
+    }
+  ]
+}

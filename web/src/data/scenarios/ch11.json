@@ -1,0 +1,62 @@
+{
+  "version": "ch11",
+  "title": {
+    "zh": "Skills 注入系统 — core-skills/ + core/src/codex/turn.rs",
+    "en": "Skills Injection System — core-skills/ + core/src/codex/turn.rs"
+  },
+  "description": {
+    "zh": "模拟 Codex Skills 完整注入流程：四层目录发现（Repo > User > System > Admin）→ 隐式注入（render_skills_section() 每轮注入 name+description）→ 用户 $mention 触发显式注入（build_skill_injections() 读取 SKILL.md 全文）→ MCP 依赖自动安装 → 内嵌系统 Skills（编译时打包）。",
+    "en": "Simulate Codex Skills full injection: four-layer discovery (Repo > User > System > Admin) → implicit injection (render_skills_section() per-turn name+description) → $mention triggers explicit injection (build_skill_injections() loads full SKILL.md) → MCP dependency auto-install → bundled system skills."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// SkillsManager 启动时扫描四层目录（loader.rs:243）\n// 优先级：Repo > User > System > Admin\n\n// 发现的 SKILL.md 文件：\n// [Repo]   ./.agents/skills/auth-helper/SKILL.md\n// [Repo]   ./.agents/skills/ci-runner/SKILL.md\n// [User]   ~/.agents/skills/imagegen/SKILL.md\n// [User]   ~/.agents/skills/openai-docs/SKILL.md\n// [System] $CODEX_HOME/skills/.system/skill-creator/SKILL.md\n// [System] $CODEX_HOME/skills/.system/skill-installer/SKILL.md\n// [System] $CODEX_HOME/skills/.system/plugin-creator/SKILL.md\n\n// 合并：同名 skill 高优先级覆盖低优先级\n// SkillLoadOutcome { skills: Vec<SkillMetadata>, disabled_paths }",
+      "annotation": {
+        "zh": "loader.rs:243 skill_roots_from_layer_stack_inner() 扫描四层根目录。同名 skill 高优先级覆盖低优先级，支持仓库级 skill 覆盖用户级同名 skill。",
+        "en": "loader.rs:243 scans four-layer root directories. Higher priority overrides lower for same-name skills."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// core/src/codex.rs:2417 — 每次 turn 隐式注入\n// render_skills_section() 只注入 allow_implicit_invocation=true 的 skills\n\n<skills_instructions>\n### Available skills\n- imagegen: Generate an image using DALL-E. Triggered when\n  user asks to create/draw/generate images.\n  (file: ~/.agents/skills/imagegen/SKILL.md)\n\n- auth-helper: Assists with OAuth setup, token management.\n  (file: ./.agents/skills/auth-helper/SKILL.md)\n\n- skill-installer: Install skills from GitHub or registry.\n  (file: $CODEX_HOME/skills/.system/skill-installer/SKILL.md)\n\n### How to use skills\n- If $SkillName OR task matches description → use it\n- Open SKILL.md, resolve relative paths from skill directory\n</skills_instructions>",
+      "annotation": {
+        "zh": "隐式注入极轻量：只有 name + description + 文件路径，SKILL.md 正文不在此注入。allow_implicit_invocation=false 的 skill 不出现在列表中。",
+        "en": "Implicit injection is lightweight: only name + description + file path. Skills with allow_implicit_invocation=false are excluded."
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "帮我画一只猫在宇宙中 — 使用 $imagegen",
+      "annotation": {
+        "zh": "$ 是 TOOL_MENTION_SIGIL。injection.rs:252 extract_tool_mentions_with_sigil() 扫描文本，识别为显式 skill mention，触发显式注入路径。",
+        "en": "$ is TOOL_MENTION_SIGIL. injection.rs:252 extract_tool_mentions_with_sigil() identifies explicit skill mention, triggering explicit injection path."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// core/src/codex/turn.rs:210 — build_skill_injections()\n// 读取 SKILL.md 全文，以 <skill> XML 注入为 role=user ResponseItem\n\n<skill>\n<name>imagegen</name>\n<path>~/.agents/skills/imagegen/SKILL.md</path>\n---\nname: imagegen\ndescription: Generate an image using DALL-E...\n---\n\n# Image Generation Skill\n\n## Usage\nUse the `image_gen` tool:\n```bash\nimage_gen --prompt \"...\" --model dall-e-3 --size 1024x1024\n```\n\n## Guidelines\n- Always confirm the prompt before generating\n- Use --model dall-e-3 for best quality\n</skill>",
+      "annotation": {
+        "zh": "SKILL.md 全文以 <skill>...</skill> XML 结构注入为 role=user 消息，紧接在用户消息之后。模型在本 turn 内完整执行 skill 指令，无需再打开文件。",
+        "en": "Full SKILL.md injected as role=user message with <skill>...</skill> XML structure, immediately after user message. Model executes skill instructions in this turn without opening files."
+      }
+    },
+    {
+      "type": "tool_call",
+      "content": "{\n  \"tool\": \"image_gen\",\n  \"arguments\": {\n    \"prompt\": \"a cat floating in outer space, surrounded by stars\",\n    \"model\": \"dall-e-3\",\n    \"size\": \"1024x1024\"\n  }\n}",
+      "toolName": "image_gen",
+      "annotation": {
+        "zh": "模型按 SKILL.md 指令调用 image_gen 工具，使用 SKILL.md 中规定的正确参数格式。Skill 的价值：固化最佳实践，减少用户重复指定参数。",
+        "en": "Model calls image_gen tool following SKILL.md instructions with correct parameters. Skill value: codifies best practices, reduces user repetition."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// ci-runner skill 被 mention：$ci-runner\n// agents/openai.yaml 声明 MCP 依赖\n//\n// mcp_skill_dependencies.rs 自动安装流程：\n// 1. collect_missing_mcp_dependencies()\n//    → github MCP server: 未找到\n// 2. 弹窗：\"ci-runner 需要 GitHub MCP server，是否安装？\"\n//    → 用户选择 Install\n// 3. 写入 MCP 配置 → OAuth 认证\n//    → McpConnectionManager 重载\n//    → github tools 可用\n//\n// Feature::SkillMcpDependencyInstall（默认开启）\n// key: \"skill_mcp_dependency_install\"",
+      "annotation": {
+        "zh": "MCP 依赖自动安装：skill 通过 agents/openai.yaml 声明需要的 MCP server，Codex 自动处理安装和 OAuth，用户体验是一键就绪。",
+        "en": "MCP dependency auto-install: skill declares required MCP server in agents/openai.yaml, Codex handles installation and OAuth automatically."
+      }
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "version": "ch10",
+  "title": {
+    "zh": "MCP 集成 — codex-mcp/ + core/src/mcp*",
+    "en": "MCP Integration — codex-mcp/ + core/src/mcp*"
+  },
+  "description": {
+    "zh": "模拟 Codex MCP（Model Context Protocol）完整集成流程：config.toml 配置 → McpConnectionManager 初始化 → RmcpClient 连接（Stdio 子进程 / StreamableHttp）→ initialize 握手（协议 2025-06-18）→ qualify_tools() 命名 → McpHandler 调用 → 审批检查 → 沙箱状态注入 → JSON-RPC tools/call → CallToolResult 返回。",
+    "en": "Simulate complete Codex MCP integration: config.toml → McpConnectionManager init → RmcpClient connection (Stdio subprocess / StreamableHttp) → initialize handshake (protocol 2025-06-18) → qualify_tools() naming → McpHandler call → approval check → sandbox state injection → JSON-RPC tools/call → CallToolResult."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "# config.toml — McpServerConfig 配置\n# config/src/mcp_types.rs:60\n\n[mcp_servers.filesystem]\ncommand = \"npx\"\nargs    = [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/workspace\"]\nenv     = { }\nstartup_timeout_sec = 30\ntool_timeout_sec    = 120\nrequired            = false\nenabled_tools       = [\"read_file\", \"list_directory\", \"write_file\"]\n\n# McpServerTransportConfig::Stdio {\n#   command, args, env, env_vars, cwd\n# }\n# 另一种：McpServerTransportConfig::StreamableHttp {\n#   url, bearer_token_env_var, http_headers\n# }",
+      "annotation": {
+        "zh": "McpServerConfig 支持两种传输：Stdio（spawn 子进程）和 StreamableHttp（HTTP POST/SSE，规范 2025-06-18）。enabled_tools 实现白名单过滤，required=true 表示启动失败时整个 codex exec 报错。",
+        "en": "McpServerConfig supports two transports: Stdio (spawn subprocess) and StreamableHttp (HTTP POST/SSE, protocol 2025-06-18). enabled_tools implements whitelist filtering, required=true means failure causes codex exec to error."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// McpConnectionManager::new() — mcp_connection_manager.rs:703\n// 对每个 enabled server 创建 AsyncManagedClient（懒初始化）\n\nsend_startup_event(McpStartupStatus::Starting { server_name: \"filesystem\" });\n\n// Stdio 分支 → spawn 子进程\nlet mut cmd = Command::new(\"npx\");\ncmd.kill_on_drop(true)\n   .stdin(Stdio::piped())\n   .stdout(Stdio::piped())\n   .env_clear()              // ← 安全关键：清空父进程环境\n   .envs(&resolved_env)\n   .args([\"-y\", \"@mcp/server-filesystem\", \"/workspace\"]);\n\n#[cfg(unix)]\ncmd.process_group(0);        // 新进程组，SIGTERM 级联\n\n// ProcessGroupGuard::Drop：SIGTERM → 等 2s → SIGKILL",
+      "annotation": {
+        "zh": "env_clear() 是安全设计核心：MCP 子进程不继承父进程环境，防止 API Key 等敏感变量泄露给第三方 MCP server。process_group(0) 确保 Kill 时整个进程树一起终止。",
+        "en": "env_clear() is a security core: MCP subprocess doesn't inherit parent environment, preventing API keys from leaking to third-party MCP servers. process_group(0) ensures the entire process tree terminates on Kill."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// initialize 握手 — mcp_connection_manager.rs:1384\n// 协议版本：ProtocolVersion::V_2025_06_18\n\nclient.initialize(InitializeRequestParams {\n    protocol_version: ProtocolVersion::V_2025_06_18,\n    capabilities: ClientCapabilities {\n        elicitation: Some(ElicitationCapability { .. }),\n    },\n    client_info: Implementation {\n        name:    \"codex-mcp-client\",\n        version: env!(\"CARGO_PKG_VERSION\"),\n        title:   Some(\"Codex\"),\n    },\n    meta: None,\n}, startup_timeout).await?;\n\n// 检测 server 是否支持沙箱状态扩展：\nlet supports_sandbox_meta = result.capabilities\n    .experimental\n    .and_then(|e| e.get(\"codex/sandbox-state-meta\"))\n    .is_some();\n\n// 握手完成后立即 list_tools() 并缓存结果",
+      "annotation": {
+        "zh": "协议版本固定为 2025-06-18（最新规范）。codex/sandbox-state-meta 是 Codex 专有扩展：server 声明支持后，每次工具调用的 _meta 字段会附加沙箱状态（sandbox_policy、cwd 等），实现服务端权限验证。",
+        "en": "Protocol version is fixed at 2025-06-18 (latest spec). codex/sandbox-state-meta is Codex proprietary extension: when server declares support, each tool call's _meta field includes sandbox state (sandbox_policy, cwd, etc.) for server-side permission verification."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// qualify_tools() — mcp_tool_names.rs:111\n// 工具命名：mcp__{server}__{tool}，最长 64 字符\n\n// 字符过滤：[a-zA-Z0-9_] 合法，其余 → \"_\"\n// server=\"filesystem\" tool=\"read_file\"\n//   → \"mcp__filesystem__read_file\"  ✓\n\n// 冲突解决（两个 server 生成相同名）：\n// → 附加 SHA-1(server+tool) 前 12 字节 hex\n// → \"mcp__s__tool_a1b2c3d4e5f6\"\n\n// 结果注册：\n// HashMap<\"mcp__filesystem__read_file\", ToolInfo {\n//   server_name:      \"filesystem\",\n//   callable_name:    \"read_file\",\n//   callable_namespace: \"mcp__filesystem__\",\n//   tool: Tool { input_schema: { ... } },\n//   connector_id: None,\n// }>\n\n// 暴露策略 (mcp_tool_exposure.rs):\n// 工具总数 < 100 → 全部直接暴露\n// 工具总数 ≥ 100 → 仅暴露 explicitly enabled connectors 的工具",
+      "annotation": {
+        "zh": "qualify_tools() 保证全实例工具名唯一。64字符上限来自 OpenAI Responses API 限制。100工具阈值平衡了功能完整性和 context token 占用——超过100个工具会消耗大量 prompt 空间。",
+        "en": "qualify_tools() guarantees instance-wide tool name uniqueness. 64-char limit comes from OpenAI Responses API. 100-tool threshold balances functionality and context token usage — over 100 tools would consume significant prompt space."
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "读取 /workspace/src/main.rs 的内容",
+      "annotation": {
+        "zh": "用户请求触发 MCP 工具调用路径",
+        "en": "User request triggers MCP tool call path"
+      }
+    },
+    {
+      "type": "tool_call",
+      "content": "{\n  \"tool\": \"mcp__filesystem__read_file\",\n  \"arguments\": {\n    \"path\": \"/workspace/src/main.rs\"\n  }\n}",
+      "toolName": "mcp__filesystem__read_file",
+      "annotation": {
+        "zh": "模型调用 qualify_tools() 生成的工具名，ToolRouter 识别 mcp__ 前缀路由到 McpHandler",
+        "en": "Model calls qualify_tools()-generated name; ToolRouter recognizes mcp__ prefix and routes to McpHandler"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// handle_mcp_tool_call() — core/src/mcp_tool_call.rs:74\n\n// Step 1: 查询 ToolAnnotations\n// filesystem::read_file 的 annotations:\n//   read_only_hint = true    ← 只读，无需审批\n//   open_world_hint = false  ← 封闭世界\n\n// Step 2: 审批决策 requires_mcp_tool_approval()\n// read_only_hint == true → false（不需要审批）\n\n// Step 3: 沙箱状态注入（server 支持 sandbox-state-meta）\nmeta[\"codex/sandbox-state-meta\"] = SandboxState {\n    sandbox_policy:      SandboxPolicy::WorkspaceWrite { .. },\n    sandbox_cwd:         \"/workspace\",\n    use_legacy_landlock: false,\n    codex_linux_sandbox_exe: None,\n};\n\n// Step 4: 发送 JSON-RPC tools/call\n// RmcpClient::call_tool(\"read_file\",\n//   args={\"path\":\"/workspace/src/main.rs\"},\n//   meta=sandbox_state, timeout=120s)",
+      "annotation": {
+        "zh": "read_only_hint=true 使 read_file 工具免审批，直接执行。沙箱状态通过 _meta 字段传给 MCP server，server 可据此验证调用方的访问范围是否合法。",
+        "en": "read_only_hint=true makes read_file skip approval. Sandbox state is passed to MCP server via _meta, allowing server to verify whether the caller's access scope is legitimate."
+      }
+    },
+    {
+      "type": "tool_result",
+      "content": "// CallToolResult — protocol/src/mcp.rs:138\n{\n  \"content\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"fn main() {\\n    println!(\\\"Hello, world!\\\");\\n}\"\n    }\n  ],\n  \"isError\": false\n}",
+      "toolName": "mcp__filesystem__read_file",
+      "annotation": {
+        "zh": "CallToolResult.is_error=false 表示工具成功执行。content 是 MCP 内容块数组，支持 text/image/resource 等类型。structured_content 字段支持 outputSchema 定义的结构化输出。",
+        "en": "CallToolResult.is_error=false means tool executed successfully. content is an array of MCP content blocks supporting text/image/resource types. structured_content supports outputSchema-defined structured output."
+      }
+    }
+  ]
+}

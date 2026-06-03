@@ -1,0 +1,74 @@
+{
+  "version": "ch07",
+  "title": { "zh": "上下文压缩 compact.rs", "en": "Context Compaction compact.rs" },
+  "description": {
+    "zh": "模拟 compact.rs 的三条压缩触发路径：预压缩（PreTurn）→ 轮中压缩（MidTurn）→ 手动压缩（Manual）。核心流程：调模型生成摘要 → collect_user_messages() → build_compacted_history() → replace_compacted_history()。",
+    "en": "Simulate compact.rs three compaction trigger paths: PreTurn, MidTurn, Manual. Core flow: call model for summary → collect_user_messages() → build_compacted_history() → replace_compacted_history()."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// turn.rs:474 — 每次 turn 开始前检查\nlet total_usage_tokens = sess.get_total_token_usage().await;\n// → 148_000\n\nlet auto_compact_limit = turn_context\n  .model_info\n  .auto_compact_token_limit()\n  .unwrap_or(i64::MAX);\n// → 120_000\n\nif total_usage_tokens >= auto_compact_limit {\n  // 触发预压缩\n}",
+      "annotation": {
+        "zh": "turn.rs:474 — total_tokens(148K) ≥ auto_compact_limit(120K)，触发预压缩条件成立",
+        "en": "turn.rs:474 — total_tokens(148K) ≥ auto_compact_limit(120K), PreTurn compaction triggered"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// compact.rs — run_pre_sampling_compact()\n// → run_auto_compact(\n//     sess, turn_context,\n//     InitialContextInjection::DoNotInject,\n//     CompactionReason::ContextLimit,\n//     CompactionPhase::PreTurn,\n//   )\n// → run_compact_task_inner_impl()\n\n// 步骤1: 调模型生成摘要\n// drain_to_completed() — 发送完整历史给模型\n// 模型输出:\nSUMMARY_PREFIX + \"已完成：读取 auth.rs，分析依赖图\\n待完成：重写核心函数\"",
+      "annotation": {
+        "zh": "compact.rs:157 — run_compact_task_inner_impl() 调用 drain_to_completed()，模型消费完整历史后输出摘要",
+        "en": "compact.rs:157 — run_compact_task_inner_impl() calls drain_to_completed(), model consumes full history and outputs summary"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// 步骤2: 收集用户消息\ncollect_user_messages(history_items)\n// 从所有 ResponseItem::Message { role: \"user\" } 中\n// 筛选非摘要消息（!is_summary_message()）\n// 返回: [\n//   \"帮我重构认证模块\",\n//   \"继续分析依赖关系\",\n// ]\n\n// 步骤3: 重建历史（最多保留 20K tokens 用户消息）\nbuild_compacted_history(\n  initial_context: vec![],  // DoNotInject → 空\n  user_messages: &[\"帮我重构认证模块\", \"继续分析依赖关系\"],\n  summary_text: \"SUMMARY_PREFIX\\n已完成：...\",\n)\n// COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000",
+      "annotation": {
+        "zh": "compact.rs — collect_user_messages() 过滤非摘要用户消息；build_compacted_history() 按 token 预算保留，从旧到新反向选取",
+        "en": "compact.rs — collect_user_messages() filters non-summary user messages; build_compacted_history() selects within token budget, newest-first reverse selection"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// 步骤4: 原子替换历史\nsess.replace_compacted_history(\n  new_history,          // 压缩后的历史\n  reference_context_item: None,  // DoNotInject → None\n  compacted_item: CompactedItem {\n    message: summary_text,\n    replacement_history: Some(new_history),\n  },\n).await;\n\n// 重置 WebSocket session\nclient_session.reset_websocket_session();\n\n// 重新计算 token 使用\nsess.recompute_token_usage(&turn_context).await;\n// total_tokens: 148K → 32K ✓",
+      "annotation": {
+        "zh": "compact.rs — replace_compacted_history() 原子替换历史；DoNotInject 时 reference_context_item=None，下一轮 turn 会完整重注入初始 context",
+        "en": "compact.rs — replace_compacted_history() atomically replaces history; with DoNotInject, reference_context_item=None, next turn fully re-injects initial context"
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "继续重写 handler.rs",
+      "annotation": {
+        "zh": "压缩完成后 turn 继续，用户消息进入压缩后的历史",
+        "en": "After compaction, turn continues with user message entering compacted history"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// turn.rs:492 — SSE 流处理完成后\nlet total_usage_tokens = sess.get_total_token_usage().await;\n// → 195_000（多次工具调用后）\nlet token_limit_reached = total_usage_tokens >= auto_compact_limit;\n// → true\nlet needs_follow_up = model_needs_follow_up || has_pending_input;\n// → true（模型发起了工具调用）\n\nif token_limit_reached && needs_follow_up {\n  run_auto_compact(\n    &sess, &turn_context,\n    InitialContextInjection::BeforeLastUserMessage,  // ← 轮中专用\n    CompactionReason::ContextLimit,\n    CompactionPhase::MidTurn,\n  ).await;\n  client_session.reset_websocket_session();\n  continue;  // ← 重新进入外层循环\n}",
+      "annotation": {
+        "zh": "turn.rs:492 — 轮中压缩触发：BeforeLastUserMessage 与 PreTurn 的 DoNotInject 不同，确保模型在压缩后看到正确的对话结构",
+        "en": "turn.rs:492 — MidTurn compaction: BeforeLastUserMessage differs from PreTurn's DoNotInject, ensuring correct conversation structure after compaction"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// compact.rs — InitialContextInjection::BeforeLastUserMessage\n// insert_initial_context_before_last_real_user_or_summary()\n//\n// 压缩后历史插入顺序:\n// 1. [user] 继续重写 handler.rs  ← 最后真实用户消息之前\n// 2. [初始 context 注入]          ← 插入点\n// 3. [user] 再跑一次测试          ← 最后真实用户消息\n// 4. [user] 压缩摘要...\n//\n// reference_context_item = Some(turn_context.to_turn_context_item())\n// → 下一轮 turn 不再重注入（已嵌入历史中）\n\ntotal_tokens: 195K → 45K ✓",
+      "annotation": {
+        "zh": "compact.rs — BeforeLastUserMessage 将初始 context 插入最后一条用户消息之前，reference_context_item 设为 Some，阻止下一轮重复注入",
+        "en": "compact.rs — BeforeLastUserMessage inserts initial context before last user message; reference_context_item set to Some, preventing re-injection next turn"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// 用户手动执行 /compact\n// compact.rs — run_compact_task()\n\nlet start_event = EventMsg::TurnStarted(TurnStartedEvent {\n  turn_id: turn_context.sub_id.clone(),\n  ..\n});\nsess.send_event(&turn_context, start_event).await;\n\n// 调用 run_compact_task_inner() 时参数:\n// CompactionTrigger::Manual\n// CompactionPhase::StandaloneTurn\n// InitialContextInjection::DoNotInject\n\n// 完成后发送警告:\nlet warning = EventMsg::Warning(WarningEvent {\n  message: \"Heads up: Long threads and multiple \\\n    compactions can cause the model to be less \\\n    accurate...\",\n});\nsess.send_event(&turn_context, warning).await;\n\ntotal_tokens: 88K → 18K ✓",
+      "annotation": {
+        "zh": "compact.rs — 手动压缩先发 TurnStarted 事件，完成后发 Warning 提示用户频繁压缩会降低模型准确性",
+        "en": "compact.rs — manual compaction emits TurnStarted first, then Warning after completion about accuracy degradation from frequent compaction"
+      }
+    }
+  ]
+}

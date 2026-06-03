@@ -1,0 +1,92 @@
+{
+  "version": "ch04",
+  "title": { "zh": "Shell 执行全流程", "en": "Shell Execution Full Flow" },
+  "description": {
+    "zh": "模拟 Codex exec.rs 的完整 Shell 执行路径：process_exec_tool_call() 入口 → build_exec_request() 构建请求 → select_process_exec_tool_sandbox_type() 选择沙箱 → spawn_child_async() 启动子进程 → consume_output() 三路并行监控（stdout / stderr / 超时） → finalize_exec_result() 聚合输出。全程对应 core/src/exec.rs 实际代码。",
+    "en": "Simulate Codex exec.rs full shell execution: process_exec_tool_call() entry → build_exec_request() → select_process_exec_tool_sandbox_type() → spawn_child_async() → consume_output() three-way parallel (stdout/stderr/timeout) → finalize_exec_result()."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// exec.rs:219 — ShellHandler 调用总入口\npub async fn process_exec_tool_call(\n  params: ExecParams,\n  sandbox_policy: &SandboxPolicy,\n  file_system_sandbox_policy: &FileSystemSandboxPolicy,\n  network_sandbox_policy: NetworkSandboxPolicy,\n  sandbox_cwd: &AbsolutePathBuf,\n  codex_linux_sandbox_exe: &Option<PathBuf>,\n  use_legacy_landlock: bool,\n  stdout_stream: Option<StdoutStream>,\n) -> Result<ExecToolCallOutput>",
+      "annotation": {
+        "zh": "exec.rs:219 — process_exec_tool_call() 是 Shell 工具的统一执行入口，接收 ExecParams 和各平台沙箱策略参数",
+        "en": "exec.rs:219 — process_exec_tool_call() is the unified shell tool entry point, receives ExecParams and platform sandbox policy params"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// ExecParams（exec.rs:83）\nExecParams {\n  command: [\"cargo\", \"check\"],\n  cwd: /home/user/myproject,\n  expiration: ExecExpiration::DefaultTimeout,\n  // DEFAULT_EXEC_COMMAND_TIMEOUT_MS = 10_000\n  capture_policy: ExecCapturePolicy::ShellTool,\n  env: { PATH: /usr/bin:... },\n  network: None,\n  sandbox_permissions: SandboxPermissions::UseDefault,\n}",
+      "annotation": {
+        "zh": "exec.rs:83 — ExecParams 携带命令、工作目录、超时策略。DEFAULT_EXEC_COMMAND_TIMEOUT_MS = 10_000（10 秒）",
+        "en": "exec.rs:83 — ExecParams carries command, cwd, expiration. DEFAULT_EXEC_COMMAND_TIMEOUT_MS = 10_000 (10s)"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// exec.rs:131 — 沙箱类型选择\nfn select_process_exec_tool_sandbox_type(\n  file_system_sandbox_policy,\n  network_sandbox_policy,\n  windows_sandbox_level,\n  enforce_managed_network,\n) -> SandboxType\n\n// Linux:   → SandboxType::Landlock\n// macOS:   → SandboxType::Seatbelt\n// Windows: → SandboxType::WindowsRestrictedToken\n//             或 WindowsElevated（proxy_enforced 时）",
+      "annotation": {
+        "zh": "exec.rs:131 — 根据 FileSystemSandboxPolicy + NetworkSandboxPolicy + 平台自动选择沙箱后端，在 spawn 前完成，不可运行时切换",
+        "en": "exec.rs:131 — Auto-selects sandbox backend from fs/network policy + platform, decided before spawn, cannot switch at runtime"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// exec.rs:245 — build_exec_request()\n// 将 ExecParams → ExecRequest（含平台相关字段）\nExecRequest {\n  command: [\"cargo\", \"check\"],\n  cwd: /home/user/myproject,\n  env: { PATH: ..., CARGO_HOME: ... },\n  sandbox: SandboxType::Landlock,\n  expiration: ExecExpiration::DefaultTimeout,\n  capture_policy: ExecCapturePolicy::ShellTool,\n  ...\n}",
+      "annotation": {
+        "zh": "exec.rs:245 — build_exec_request() 转换为平台相关的 ExecRequest，若有 NetworkProxy 则调用 network.apply_to_env() 注入代理环境变量",
+        "en": "exec.rs:245 — build_exec_request() converts to platform-specific ExecRequest; calls network.apply_to_env() if NetworkProxy present"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// exec.rs:877 — spawn_child_async()\nspawn_child_async(SpawnChildRequest {\n  program: PathBuf::from(\"cargo\"),\n  args: [\"check\"],\n  cwd: /home/user/myproject,\n  stdio_policy: StdioPolicy::RedirectForShellTool,\n  // → stdout: Stdio::piped()\n  // → stderr: Stdio::piped()\n  env: { ... },\n  network_sandbox_policy: NetworkSandboxPolicy,\n  network: None,\n}).await?\n// → Child { pid: 18372 } 沙箱内运行",
+      "annotation": {
+        "zh": "exec.rs:877 — spawn_child_async() 产生实际的 tokio::process::Child。StdioPolicy::RedirectForShellTool 将 stdout/stderr 设为 piped，以便后续异步读取",
+        "en": "exec.rs:877 — spawn_child_async() spawns actual tokio::process::Child. StdioPolicy::RedirectForShellTool pipes stdout/stderr for async reading"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// exec.rs:1234 — consume_output() 启动三路并行\nasync fn consume_output(\n  child: Child,\n  expiration: ExecExpiration,\n  capture_policy: ExecCapturePolicy,\n  stdout_stream: Option<StdoutStream>,\n) -> Result<RawExecToolCallOutput>\n\n// 三路并行：\ntokio::spawn(read_capped(stdout_reader, ...))  // stdout 任务\ntokio::spawn(read_capped(stderr_reader, ...))  // stderr 任务\n// tokio::select! {\n//   result = child.wait()      => 进程正常退出\n//   _ = expiration.wait()      => 超时触发\n//   _ = ctrl_c_signal          => 用户中止\n// }",
+      "annotation": {
+        "zh": "exec.rs:1234 — consume_output() 启动两个异步 read_capped 任务，再用 tokio::select! 竞争进程退出 / 超时 / 取消三个事件",
+        "en": "exec.rs:1234 — consume_output() spawns two read_capped tasks, then tokio::select! races process exit / timeout / cancellation"
+      }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "shell",
+      "content": "cargo check",
+      "annotation": {
+        "zh": "子进程运行中（pid=18372）。read_capped() 持续从 pipe 读取 stdout 增量，每次读到数据就通过 StdoutStream 推送 ExecCommandOutputDeltaEvent 给 TUI 实时展示",
+        "en": "Child process running (pid=18372). read_capped() continuously reads stdout increments, pushes ExecCommandOutputDeltaEvent via StdoutStream to TUI"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// tokio::select! 竞争结果：child.wait() 先触发\n// exit_status = ExitStatus(0)\n// timed_out = false\n\n// 等待 pipe reader task 完成\n// IO_DRAIN_TIMEOUT_MS = 2_000（exec.rs:80）\nstdout_handle.await  // ✓ 完成\nstderr_handle.await  // ✓ 完成\n// 防止孙进程持有 fd 导致 read() 永久阻塞",
+      "annotation": {
+        "zh": "exec.rs:80 — IO_DRAIN_TIMEOUT_MS = 2_000。child.wait() 返回后，最多等 2 秒让 pipe reader 任务完成，防止孙进程持有文件描述符导致 read() 阻塞",
+        "en": "exec.rs:80 — IO_DRAIN_TIMEOUT_MS = 2_000. After child.wait(), wait up to 2s for pipe reader tasks to finish, preventing fd hold by grandchild processes"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// 超时分支示例（timed_out = true）\n// expiration.wait() 先于 child.wait() 触发：\nkill_child_process_group(child.id())\n// → SIGKILL 发送给整个进程组（含孙进程）\n\n// exec.rs:57\nconst EXEC_TIMEOUT_EXIT_CODE: i32 = 124;\n// finalize_exec_result() 将 exit_code 覆盖为 124",
+      "annotation": {
+        "zh": "exec.rs:57 — 超时时 kill_child_process_group() 终止整个进程组，exit_code 被 finalize_exec_result() 强制覆盖为 EXEC_TIMEOUT_EXIT_CODE = 124",
+        "en": "exec.rs:57 — On timeout, kill_child_process_group() kills the entire process group; exit_code is overridden to EXEC_TIMEOUT_EXIT_CODE = 124 by finalize_exec_result()"
+      }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "shell",
+      "content": "// exec.rs:640 — finalize_exec_result()\nExecToolCallOutput {\n  exit_code: 0,\n  stdout: StreamOutput {\n    text: \"   Compiling myapp v0.1.0\\n    Finished dev in 2.34s\",\n    truncated_after_lines: None,\n  },\n  stderr: StreamOutput { text: \"\", .. },\n  aggregated_output: StreamOutput { .. },\n  duration: 2.341s,\n  timed_out: false,\n}\n// → ResponseInputItem::FunctionCallOutput\n// → record_conversation_items() → session history",
+      "annotation": {
+        "zh": "exec.rs:640 — finalize_exec_result() 聚合 stdout/stderr 输出，生成 ExecToolCallOutput（定义在 protocol/src/exec_output.rs:40），再转换为 ResponseInputItem 写回 session history",
+        "en": "exec.rs:640 — finalize_exec_result() aggregates stdout/stderr into ExecToolCallOutput (defined in protocol/src/exec_output.rs:40), converted to ResponseInputItem for session history"
+      }
+    }
+  ]
+}

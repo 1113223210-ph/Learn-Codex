@@ -1,0 +1,73 @@
+{
+  "version": "ch12",
+  "title": {
+    "zh": "Plan 模式 — collaboration-mode-templates/plan.md",
+    "en": "Plan Mode — collaboration-mode-templates/plan.md"
+  },
+  "description": {
+    "zh": "模拟 Codex Plan 模式完整工作流：/plan 命令切换模式 → plan.md（128行）注入 <collaboration_mode> → Phase1 非变更探索 → Phase2 request_user_input 提问（2-4选项）→ Phase3 规格确认 → <proposed_plan> 块流式渲染 → 审批弹窗 → 切回 Default 执行。",
+    "en": "Simulate full Codex Plan Mode workflow: /plan switches mode → plan.md (128 lines) injected in <collaboration_mode> → Phase1 non-mutating exploration → Phase2 request_user_input questions (2-4 options) → Phase3 spec completion → <proposed_plan> streaming → approval dialog → switch back to Default."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// 用户输入 /plan，TUI 触发模式切换\n// tui/src/chatwidget/slash_dispatch.rs:36\n\napply_plan_slash_command() {\n    let mask = collaboration_modes::plan_mask();\n    // CollaborationModeMask {\n    //   mode: Some(ModeKind::Plan),\n    //   reasoning_effort: Some(Some(ReasoningEffort::Medium)),\n    //   developer_instructions: Some(Some(plan_md)),\n    // }\n    self.set_collaboration_mask(mask);\n}\n\n// core/src/context_manager/updates.rs:62\n// build_collaboration_mode_update_item() 检测到模式变化\n// → 注入新 developer message：\n// <collaboration_mode>\n// # Plan Mode (Conversational)\n// [plan.md 128行全文]\n// </collaboration_mode>",
+      "annotation": {
+        "zh": "/plan 命令通过 plan_mask() 获取配置，set_collaboration_mask 切换模式。context_manager 检测到 collaboration_mode 变化，自动注入 <collaboration_mode> 包裹的 plan.md 作为 developer message。",
+        "en": "/plan command uses plan_mask() to get config, set_collaboration_mask switches mode. context_manager detects collaboration_mode change and injects plan.md wrapped in <collaboration_mode> as developer message."
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "重构认证模块，把 JWT 换成 Session-based 方案",
+      "annotation": {
+        "zh": "用户在 Plan 模式下提出任务。plan.md 规定：即使用户语气是命令式，也不执行——视为规划请求。",
+        "en": "User submits task in Plan mode. plan.md specifies: even imperative language is treated as planning request, not execution."
+      }
+    },
+    {
+      "type": "tool_call",
+      "content": "{\n  \"tool\": \"shell\",\n  \"arguments\": {\n    \"command\": \"grep -r \\\"JwtAuth\\\" src/ --include='*.rs' -l\"\n  }\n}",
+      "toolName": "shell",
+      "annotation": {
+        "zh": "Phase 1：探索环境，先消除未知量再提问。plan.md:41 — 至少执行一次非变更探索后才能提问。grep 是只读操作，允许。",
+        "en": "Phase 1: Ground in environment, eliminate unknowns before asking. plan.md:41 — perform at least one non-mutating exploration before asking questions. grep is read-only, allowed."
+      }
+    },
+    {
+      "type": "tool_result",
+      "content": "src/auth/jwt.rs\nsrc/middleware/auth_middleware.rs\nsrc/handlers/login.rs\nsrc/handlers/logout.rs",
+      "toolName": "shell",
+      "annotation": {
+        "zh": "探索结果：4 个文件需要修改。模型继续读取关键文件内容，形成对代码库的完整认知。",
+        "en": "Exploration result: 4 files need modification. Model continues reading key files to build complete understanding of codebase."
+      }
+    },
+    {
+      "type": "tool_call",
+      "content": "{\n  \"tool\": \"request_user_input\",\n  \"arguments\": {\n    \"question\": \"Session 存储方案？\",\n    \"options\": [\n      \"Redis（推荐）— 水平扩展，TTL 自动管理\",\n      \"内存存储 — 无依赖，适合单实例开发环境\",\n      \"数据库（PostgreSQL）— 完全自控，无需额外服务\"\n    ]\n  }\n}",
+      "toolName": "request_user_input",
+      "annotation": {
+        "zh": "Phase 2：request_user_input 是 Plan 模式唯一允许的提问工具（config_types.rs:428 allows_request_user_input=true）。提供 2-4 个互斥选项 + 推荐默认，询问影响规格的关键决策。",
+        "en": "Phase 2: request_user_input is the only questioning tool allowed in Plan mode (allows_request_user_input=true). Provides 2-4 mutually exclusive options + recommended default for decisions that materially change the spec."
+      }
+    },
+    {
+      "type": "tool_result",
+      "content": "Redis（推荐）— 水平扩展，TTL 自动管理",
+      "toolName": "request_user_input",
+      "annotation": {
+        "zh": "用户选择了 Redis 方案。模型继续 Phase 3 规格确认：确认 session TTL、cookie 配置、撤销策略等实现细节。",
+        "en": "User chose Redis option. Model continues to Phase 3 spec completion: confirming session TTL, cookie config, revocation strategy, etc."
+      }
+    },
+    {
+      "type": "assistant_text",
+      "content": "探索完成，规格已决策完整，以下是实现方案：\n\n<proposed_plan>\n## 认证模块重构：JWT → Redis Session\n\n**Summary**\n将 JWT 无状态认证替换为 Redis session 存储，解决 token 撤销问题，保持 API 接口不变。\n\n**Key Changes**\n- `src/auth/`: 新增 `session.rs`，移除 `jwt.rs`\n- `src/middleware/auth_middleware.rs`: 改为从 Redis 读取 session\n- `src/handlers/login.rs`: 改为写入 Redis session，返回 session cookie\n- 新增 Redis 客户端配置（`config.toml` 中 `[redis]` 节）\n\n**Test Plan**\n- 登录 → session 写入 Redis → cookie 返回\n- 请求 → session 读取 → 鉴权通过/失败\n- logout → session 删除 → 后续请求拒绝\n- TTL 过期 → 自动登出\n\n**Assumptions**\n- Session TTL: 24h（可配置）\n- Redis 地址: `REDIS_URL` 环境变量\n- Cookie: HttpOnly + Secure + SameSite=Strict\n</proposed_plan>",
+      "annotation": {
+        "zh": "模型输出 <proposed_plan> 块。AssistantTextStreamParser(plan_mode=true) 将其分流：普通文本走 AgentMessageContentDelta，plan 块内容走 PlanDelta 事件（TUI 特殊背景色渲染）。turn 完成后触发审批弹窗。",
+        "en": "Model outputs <proposed_plan> block. AssistantTextStreamParser(plan_mode=true) splits it: normal text to AgentMessageContentDelta, plan content to PlanDelta event (TUI renders with special background). Triggers approval dialog after turn completes."
+      }
+    }
+  ]
+}

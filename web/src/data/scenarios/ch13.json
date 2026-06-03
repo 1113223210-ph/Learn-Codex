@@ -1,0 +1,73 @@
+{
+  "version": "ch13",
+  "title": {
+    "zh": "多 Agent 系统 — core/src/agent/control.rs",
+    "en": "Multi-Agent System — core/src/agent/control.rs"
+  },
+  "description": {
+    "zh": "模拟 Codex 多 Agent 完整工作流：模型调用 spawn_agent 工具 → AgentControl::spawn_agent() 六步创建子 Agent → Config 继承（sandbox/approval/cwd）与 History 隔离 → Mailbox 通信（父等待 / 子完成通知）→ spawn_agents_on_csv CSV 批处理 → 深度限制自动降级。",
+    "en": "Simulate complete Codex multi-agent workflow: model calls spawn_agent tool → AgentControl::spawn_agent() six-step child creation → Config inheritance (sandbox/approval/cwd) with History isolation → Mailbox communication (parent wait / child completion) → spawn_agents_on_csv CSV batch processing → depth limit auto-downgrade."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// Feature::Collab（key=\"multi_agent\"，default=true）已启用\n// 向模型提供的工具集（tool_config.rs:146）：\n//   spawn_agent     — 创建子 Agent（V1/V2）\n//   send_input      — 发送消息给已存在 Agent（V1）\n//   send_message    — 发送消息不触发 turn（V2）\n//   followup_task   — 发送消息并触发新 turn（V2）\n//   wait_agent      — 等待一个或多个 Agent 完成\n//   close_agent     — 关闭 Agent 及其子树\n//   list_agents     — 列出当前所有 live Agent\n\n// SubAgentSource 枚举（protocol.rs:2623）全部变体：\n//   ThreadSpawn { parent_thread_id, depth, agent_path, agent_nickname, agent_role }\n//   MemoryConsolidation\n//   Review\n//   Compact\n//   Other(String)   — e.g. \"agent_job:<id>\"",
+      "annotation": {
+        "zh": "Feature::Collab（配置 key=multi_agent）默认开启，向模型提供完整多 Agent 工具集。SubAgentSource 枚举记录每个子 Agent 的创建来源，用于在客户端重建 Agent 树结构。",
+        "en": "Feature::Collab (config key=multi_agent) is on by default, providing the full multi-agent toolset to the model. SubAgentSource enum records each sub-agent's creation source, used to reconstruct agent tree in clients."
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "帮我分析这个 mono-repo 的所有微服务，并为每个服务生成独立的架构文档",
+      "annotation": {
+        "zh": "需要并行处理多个子任务，模型决定 spawn 多个子 Agent 分工处理。",
+        "en": "Multiple subtasks need parallel processing; model decides to spawn multiple sub-agents for division of labor."
+      }
+    },
+    {
+      "type": "tool_call",
+      "content": "{\n  \"tool\": \"spawn_agent\",\n  \"arguments\": {\n    \"task_name\": \"auth-service-docs\",\n    \"message\": \"分析 services/auth/ 目录，生成架构文档，保存到 docs/auth.md\",\n    \"agent_type\": \"architect\",\n    \"fork_turns\": \"none\",\n    \"model\": null,\n    \"reasoning_effort\": null\n  }\n}",
+      "toolName": "spawn_agent",
+      "annotation": {
+        "zh": "模型调用 spawn_agent（V2 格式，task_name 必填）。fork_turns=none 表示子 Agent 历史完全隔离，不复制父线程上下文。子 Agent 路径为 /root/current/auth-service-docs。",
+        "en": "Model calls spawn_agent (V2 format, task_name required). fork_turns=none means child agent history is fully isolated. Child agent path: /root/current/auth-service-docs."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// control.rs:151 spawn_agent_internal() 六步执行：\n\n// 1. reserve_spawn_slot()\n//    AgentRegistry 检查并发限制（agent_max_threads）\n//    → SpawnReservation { slot: 3 }\n\n// 2. inherited_shell_snapshot_for_source()\n//    ThreadSpawn 类型 → 从父线程继承 shell 快照\n\n// 3. apply_spawn_agent_runtime_overrides(config)\n//    从父 turn 复制：sandbox_policy, approval_policy,\n//    shell_environment_policy, cwd, model, reasoning_effort\n//    history: 空（fork_turns=none）\n\n// 4. prepare_thread_spawn()\n//    agent_path = /root/main/auth-service-docs\n//    agent_nickname = \"auth-service-docs\"\n\n// 5. spawn_new_thread_with_source(SubAgentSource::ThreadSpawn{..})\n//    → new_thread_id = ThreadId(\"019e3f..\")\n//    → thread/started 通知发送给所有客户端\n\n// 6. send_input(Op::UserTurn { .. })\n//    子 Agent 开始运行\n// → maybe_start_completion_watcher() 启动 tokio::spawn 监听完成",
+      "annotation": {
+        "zh": "spawn_agent_internal() 六步原子流程。最后启动 maybe_start_completion_watcher：一个独立的 tokio::spawn task 通过 watch::Receiver<AgentStatus> 监听子 Agent 状态，完成时向父线程注入完成通知。",
+        "en": "spawn_agent_internal() six-step atomic flow. Finally starts maybe_start_completion_watcher: an independent tokio::spawn task monitors child agent status via watch::Receiver<AgentStatus>, injecting completion notification to parent when done."
+      }
+    },
+    {
+      "type": "tool_result",
+      "content": "{\n  \"task_name\": \"auth-service-docs\",\n  \"nickname\": \"auth-service-docs\"\n}",
+      "toolName": "spawn_agent",
+      "annotation": {
+        "zh": "V2 返回 task_name + nickname。客户端通过 CollabAgentToolCall 事件（app-server-protocol/v2.rs:4631）看到子 Agent 状态变化：InProgress → Completed。",
+        "en": "V2 returns task_name + nickname. Clients see child agent status changes via CollabAgentToolCall event (v2.rs:4631): InProgress → Completed."
+      }
+    },
+    {
+      "type": "tool_call",
+      "content": "{\n  \"tool\": \"wait_agent\",\n  \"arguments\": {\n    \"task_names\": [\"auth-service-docs\", \"payment-service-docs\", \"user-service-docs\"],\n    \"timeout_secs\": 300\n  }\n}",
+      "toolName": "wait_agent",
+      "annotation": {
+        "zh": "父 Agent 调用 wait_agent 等待所有子 Agent 完成。V2 模式通过订阅 mailbox seq number（watch::Receiver<u64>）检测任何 Agent 发送消息；V1 模式直接订阅 AgentStatus watch channel。",
+        "en": "Parent agent calls wait_agent to wait for all children. V2 mode detects via mailbox seq number (watch::Receiver<u64>); V1 mode directly subscribes to AgentStatus watch channel."
+      }
+    },
+    {
+      "type": "tool_result",
+      "content": "{\n  \"message\": \"Wait completed.\",\n  \"timed_out\": false,\n  \"completed_agents\": [\n    { \"task_name\": \"auth-service-docs\",    \"status\": \"Completed\" },\n    { \"task_name\": \"payment-service-docs\", \"status\": \"Completed\" },\n    { \"task_name\": \"user-service-docs\",    \"status\": \"Completed\" }\n  ]\n}",
+      "toolName": "wait_agent",
+      "annotation": {
+        "zh": "三个子 Agent 均完成。maybe_start_completion_watcher 的 tokio::spawn 任务已通过 inject_user_message_without_turn 将各子 Agent 的完成信息注入父线程对话历史。父 Agent 现在可以汇总结果。",
+        "en": "All three sub-agents completed. maybe_start_completion_watcher's tokio::spawn tasks have injected each child's completion info into parent thread history via inject_user_message_without_turn. Parent can now aggregate results."
+      }
+    }
+  ]
+}

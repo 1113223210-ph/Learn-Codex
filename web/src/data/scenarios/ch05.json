@@ -1,0 +1,110 @@
+{
+  "version": "ch05",
+  "title": { "zh": "沙箱 + execpolicy 完整决策流", "en": "Sandbox + execpolicy Full Decision Flow" },
+  "description": {
+    "zh": "模拟 Codex 对 shell 命令的完整安全决策：execpolicy 规则引擎（prefix_rule / BANNED_PREFIX_SUGGESTIONS）→ 启发式回退（is_known_safe_command / command_might_be_dangerous）→ Decision（Allow/Prompt/Forbidden）→ SandboxManager 选择隔离后端。对应 core/src/exec_policy.rs + sandboxing/src/manager.rs。",
+    "en": "Simulate Codex full security decision for shell commands: execpolicy rule engine → heuristic fallback → Decision (Allow/Prompt/Forbidden) → SandboxManager picks isolation backend. Maps to core/src/exec_policy.rs + sandboxing/src/manager.rs."
+  },
+  "steps": [
+    {
+      "type": "user_message",
+      "content": "帮我检查项目是否编译通过",
+      "annotation": {
+        "zh": "用户请求触发 shell 工具调用，ShellHandler 将命令传给 exec_policy 决策管线",
+        "en": "User request triggers shell tool call; ShellHandler passes command to exec_policy decision pipeline"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// exec_policy.rs — check_command([\"cargo\", \"check\"])\n\n// 步骤 1: parse commands\n(commands, used_complex_parsing) =\n  commands_for_exec_policy(&[\"cargo\", \"check\"])\n→ ([\"cargo\", \"check\"], false)\n\n// 步骤 2: execpolicy 规则引擎匹配\npolicy.evaluate([\"cargo\", \"check\"], &opts)\n→ matchedRules: []  // 无规则匹配\n\n// 步骤 3: 启发式回退\nrender_decision_for_unmatched_command(\n  approval_policy,\n  sandbox_policy,\n  command,\n  ...\n)",
+      "annotation": {
+        "zh": "exec_policy.rs — commands_for_exec_policy() 解析命令，先走 execpolicy 规则引擎，无匹配则进入启发式",
+        "en": "exec_policy.rs — commands_for_exec_policy() parses command, tries rule engine first, falls back to heuristics on no match"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// render_decision_for_unmatched_command()\n\nis_known_safe_command([\"cargo\", \"check\"])\n→ is_safe_to_call_with_exec([\"cargo\", \"check\"])\n→ \"cargo\" ∉ 安全白名单\n→ false\n\ncommand_might_be_dangerous([\"cargo\", \"check\"])\n→ is_dangerous_to_call_with_exec([\"cargo\", \"check\"])\n→ \"cargo\" ∉ 危险命令列表\n→ false\n\n// approval_policy = AskForApproval::OnFailure\nmatch approval_policy {\n  AskForApproval::OnFailure => Decision::Allow\n  // 依赖沙箱做实际隔离\n}\n→ Decision::Allow",
+      "annotation": {
+        "zh": "is_known_safe=false，is_dangerous=false，AskForApproval::OnFailure → Allow。沙箱限制实际权限",
+        "en": "is_known_safe=false, is_dangerous=false, AskForApproval::OnFailure → Allow. Sandbox enforces actual restrictions"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// sandboxing/src/manager.rs — SandboxManager::select_initial()\n\nshould_require_platform_sandbox(\n  file_system_policy,    // FileSystemSandboxKind::Restricted\n  network_sandbox_policy, // NetworkSandboxPolicy::Restricted\n  has_managed_network,   // false\n)\n→ true  // Restricted fs policy 需要沙箱\n\n// Linux:\nget_platform_sandbox(windows_sandbox_enabled=false)\n→ Some(SandboxType::LinuxSeccomp)\n\n// manager.transform() 构建实际 argv:\n// codex-linux-sandbox \\\n//   --sandbox-policy-cwd /home/user/myproject \\\n//   --command-cwd /home/user/myproject \\\n//   --sandbox-policy '{\"WorkspaceWrite\":{...}}' \\\n//   --file-system-sandbox-policy '{...}' \\\n//   --network-sandbox-policy '\"Restricted\"' \\\n//   -- cargo check",
+      "annotation": {
+        "zh": "sandboxing/src/manager.rs — select_initial() 决定使用平台沙箱，transform() 构建 codex-linux-sandbox 的实际 argv",
+        "en": "sandboxing/src/manager.rs — select_initial() decides platform sandbox, transform() builds actual argv for codex-linux-sandbox"
+      }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "shell",
+      "content": "cargo check",
+      "annotation": {
+        "zh": "Decision::Allow → 命令在 LinuxSeccomp 沙箱内执行。沙箱限制：只能写 workspace 目录，网络受限",
+        "en": "Decision::Allow → command executes inside LinuxSeccomp sandbox. Restrictions: write-only to workspace, network restricted"
+      }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "shell",
+      "content": "   Compiling myapp v0.1.0 (/home/user/myproject)\n    Finished dev [unoptimized + debuginfo] target(s) in 2.34s",
+      "annotation": {
+        "zh": "沙箱内执行成功，ExecToolCallOutput { exit_code: 0, timed_out: false }",
+        "en": "Executed successfully inside sandbox, ExecToolCallOutput { exit_code: 0, timed_out: false }"
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "把代码提交到远端",
+      "annotation": {
+        "zh": "模型决定调用 git push，触发新一轮 exec_policy 检查",
+        "en": "Model decides to call git push, triggering new exec_policy check"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// exec_policy.rs — check_command([\"git\", \"push\", \"origin\", \"main\"])\n\n// BANNED_PREFIX_SUGGESTIONS 检查:\nstatic BANNED_PREFIX_SUGGESTIONS: &[&[&str]] = &[\n  &[\"git\"],\n  // ...（shell、python、sudo 等都在列表中）\n];\n// \"git\" 命中 → HeuristicsRuleMatch { decision: Prompt }\n\n// 同时: command_might_be_dangerous([\"git\",\"push\",..])\n// → find_git_subcommand() → \"push\"\n// → git_subcommand_requires_prompt(\"push\") → true\n// → Prompt\n\n// 合并: Prompt\n→ Decision::Prompt",
+      "annotation": {
+        "zh": "git 在 BANNED_PREFIX_SUGGESTIONS 中，git push 属于不可逆远端操作 → Decision::Prompt，等待用户批准",
+        "en": "git in BANNED_PREFIX_SUGGESTIONS, git push is irreversible remote op → Decision::Prompt, awaiting user approval"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// AgentEvent::ExecApprovalRequest 发送给 TUI\nApprovalRequest {\n  call_id: \"call_03\",\n  command: [\"git\", \"push\", \"origin\", \"main\"],\n  reason: \"git 命令需要批准\",\n  proposed_amendment: Some(\n    ExecPolicyAmendment {\n      prefix: [\"git\", \"push\"],\n      decision: Allow,\n    }\n  ),\n}\n// 用户可选:\n//   ① 本次批准 (ReviewDecision::Approved)\n//   ② 批准并记住 (ReviewDecision::ApprovedExecpolicyAmendment)\n//   ③ 拒绝 (ReviewDecision::Denied)",
+      "annotation": {
+        "zh": "Prompt 触发 approval 流程。proposed_amendment 允许用户将此规则加入 execpolicy rules 文件（exec_policy.rs:try_derive_execpolicy_amendment_for_prompt_rules）",
+        "en": "Prompt triggers approval flow. proposed_amendment lets user add rule to execpolicy rules file (exec_policy.rs:try_derive_execpolicy_amendment_for_prompt_rules)"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// 用户选择: ReviewDecision::ApprovedExecpolicyAmendment\n// → exec_policy.rs:blocking_append_allow_prefix_rule()\n//    写入到 ~/.codex/rules/default.rules:\n//\nprefix_rule(\n  pattern = [\"git\", \"push\"],\n)\n// 下次同类命令自动 Allow，不再询问",
+      "annotation": {
+        "zh": "exec_policy.rs:blocking_append_allow_prefix_rule() — 将 prefix_rule 追加写入 rules/default.rules，实现永久记住批准",
+        "en": "exec_policy.rs:blocking_append_allow_prefix_rule() — appends prefix_rule to rules/default.rules for permanent allow"
+      }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "shell",
+      "content": "git push origin main",
+      "annotation": {
+        "zh": "用户批准后 Decision → Allow，命令在沙箱内执行",
+        "en": "After user approval Decision → Allow, command executes inside sandbox"
+      }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "shell",
+      "content": "Enumerating objects: 5, done.\nCounting objects: 100% (5/5), done.\nTo github.com:user/myapp.git\n   abc1234..def5678  main -> main",
+      "annotation": {
+        "zh": "git push 成功。ExecToolCallOutput { exit_code: 0 }，结果写回 session history",
+        "en": "git push succeeded. ExecToolCallOutput { exit_code: 0 }, result written to session history"
+      }
+    }
+  ]
+}

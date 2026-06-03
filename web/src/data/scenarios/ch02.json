@@ -1,0 +1,62 @@
+{
+  "version": "ch02",
+  "title": { "zh": "工具系统完整调用链", "en": "Tool System Full Dispatch Chain" },
+  "description": {
+    "zh": "模拟 Codex 工具系统的完整调用链：FunctionCall 到达 → build_tool_call() 解析 payload → ToolCallRuntime tokio::spawn → RwLock 并行控制 → ToolRegistry 查找 handler → ShellHandler 执行 → 结果回传。每步对应 router.rs / registry.rs / parallel.rs 实际代码。",
+    "en": "Simulate Codex tool system full dispatch: FunctionCall → build_tool_call() payload parse → ToolCallRuntime tokio::spawn → RwLock parallel control → ToolRegistry handler lookup → ShellHandler execute → result return."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// turn.rs SSE 流处理\nResponseEvent::OutputItemDone(item)\n// item 类型: FunctionCall\n→ ToolRouter::build_tool_call(&sess, item).await?",
+      "annotation": { "zh": "turn.rs:1947 — OutputItemDone 触发工具调用流程，进入 router.rs", "en": "turn.rs:1947 — OutputItemDone triggers tool call flow, enters router.rs" }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "shell",
+      "content": "cargo check 2>&1 | head -20",
+      "annotation": { "zh": "router.rs:172 — FunctionCall { name: 'shell', call_id: 'call_01', arguments: '{\"command\":\"cargo check\"}' }", "en": "router.rs:172 — FunctionCall { name: 'shell', call_id: 'call_01', arguments: '{\"command\":\"cargo check\"}' }" }
+    },
+    {
+      "type": "system_event",
+      "content": "build_tool_call() 解析:\n① resolve_mcp_tool_info('shell') → None\n  （非 MCP 工具）\n② payload = ToolPayload::Function {\n     arguments: '{\"command\":\"cargo check\"}'\n   }\n→ ToolCall { tool_name: 'shell', call_id: 'call_01', .. }",
+      "annotation": { "zh": "router.rs:183 — 先查 MCP 表，未找到则构造 Function payload", "en": "router.rs:183 — Check MCP table first; not found, construct Function payload" }
+    },
+    {
+      "type": "system_event",
+      "content": "ToolCallRuntime::handle_tool_call(\n  call: ToolCall { shell, call_01 },\n  cancellation_token,\n)\n// parallel.rs:106\nAbortOnDropHandle::new(tokio::spawn(async {\n  tokio::select! {\n    _ = token.cancelled() => aborted_response,\n    res = dispatch(...) => res,\n  }\n}))",
+      "annotation": { "zh": "parallel.rs:106 — 每个工具在独立 Tokio task 运行，cancellation_token 保证可中止", "en": "parallel.rs:106 — Each tool runs in a dedicated Tokio task, cancellation_token guarantees abort" }
+    },
+    {
+      "type": "system_event",
+      "content": "// parallel.rs:89\nlet supports_parallel =\n  self.router.tool_supports_parallel(&call);\n// → false（shell 不支持并行）\n\n// parallel.rs:115\nlet _guard = if supports_parallel {\n  Either::Left(lock.read().await)   // 共享锁：可多个工具并行\n} else {\n  Either::Right(lock.write().await) // 独占锁：shell 串行执行\n};",
+      "annotation": { "zh": "parallel.rs:89 — tool_supports_parallel 判断；parallel.rs:115 — 按结果取 read/write lock", "en": "parallel.rs:89 — tool_supports_parallel check; parallel.rs:115 — acquire read/write lock accordingly" }
+    },
+    {
+      "type": "system_event",
+      "content": "ToolRegistry::dispatch_any(invocation)\n// registry.rs:237\n① handler(&tool_name) → ShellHandler  // O(1) HashMap 查找\n② handler.matches_kind(&payload)      // 校验 payload 类型匹配\n③ pre_tool_use_payload → run_pre_tool_use_hooks()  // PreToolUse hook\n④ if is_mutating: tool_call_gate.wait_ready()       // 等待工具门控放行\n⑤ handler.handle_any(invocation).await              // 实际执行\n⑥ run_post_tool_use_hooks()                         // PostToolUse hook",
+      "annotation": { "zh": "registry.rs:237 — dispatch_any 完整流程：查找→类型校验→PreHook→门控等待→执行→PostHook", "en": "registry.rs:237 — dispatch_any full flow: lookup → type check → PreHook → gate wait → execute → PostHook" }
+    },
+    {
+      "type": "system_event",
+      "content": "// ShellHandler::handle(invocation)\n// → handlers/shell.rs\n解析参数: ShellToolCallParams {\n  command: 'cargo check 2>&1 | head -20',\n  workdir: None → 使用 sess.cwd,\n  timeout_ms: None,\n  sandbox_permissions: UseDefault,\n}\n// → 进入 ToolOrchestrator (ch06)",
+      "annotation": { "zh": "handlers/shell.rs — 解析参数后进入三阶段编排：批准→沙箱选择→执行", "en": "handlers/shell.rs — After parsing params, enters three-phase orchestration: approval → sandbox → execute" }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "shell",
+      "content": "Exit code: 1\nWall time: 2.3 seconds\nOutput:\nerror[E0308]: mismatched types\n --> src/auth.rs:42:20\n  |\n42|     let token: &str = generate_token(user_id);\n  |                       ^^^^^^^^^^^^^^ expected `&str`, found `String`\n\nerror: could not compile `myapp`",
+      "annotation": { "zh": "ShellHandler 执行完成，format_exec_output_for_model_structured() 格式化为含 exit_code + duration 的 JSON", "en": "ShellHandler done, format_exec_output_for_model_structured() formats result as JSON with exit_code + duration" }
+    },
+    {
+      "type": "system_event",
+      "content": "AnyToolResult {\n  call_id: 'call_01',\n  payload: ToolPayload::Function { .. },\n  result: Box<ShellToolOutput>,\n}\n// registry.rs:107\n→ into_response()\n→ ResponseInputItem::FunctionCallOutput {\n     call_id: 'call_01',\n     output: '{ \"output\": \"...\", \"metadata\": { \"exit_code\": 1 } }'\n   }",
+      "annotation": { "zh": "registry.rs:107 — into_response() 按 payload 类型生成对应 ResponseInputItem，追加到 session history", "en": "registry.rs:107 — into_response() generates ResponseInputItem by payload type, appended to session history" }
+    },
+    {
+      "type": "system_event",
+      "content": "// 回到 turn.rs FuturesOrdered\nFuturesOrdered 收割 call_01 结果\n→ sess.record_conversation_items(\n     &turn_context,\n     &[ResponseInputItem::FunctionCallOutput { .. }]\n   ).await\n→ needs_follow_up = true\n→ 外层循环继续，第二轮采样",
+      "annotation": { "zh": "turn.rs:1961 — needs_follow_up |= output_result.needs_follow_up；drain_in_flight()（turn.rs:2176）在 SSE 流结束后统一收割并写回 history", "en": "turn.rs:1961 — needs_follow_up |= output_result.needs_follow_up; drain_in_flight() at turn.rs:2176 harvests after SSE ends, writes to history" }
+    }
+  ]
+}

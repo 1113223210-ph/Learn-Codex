@@ -1,0 +1,77 @@
+{
+  "version": "ch08",
+  "title": {
+    "zh": "Memories 两阶段管道 — state/src/runtime/memories.rs",
+    "en": "Memories Two-Stage Pipeline — state/src/runtime/memories.rs"
+  },
+  "description": {
+    "zh": "模拟 Codex 跨会话记忆系统的完整流程：Session 启动触发后台任务 → Stage1 per-thread 争抢与提取（raw_memory + rollout_summary） → Phase2 全局整合（LLM 增量整合 → ~/.codex/memories/） → 新会话注入 + 污染检测（web_search → memory_mode='polluted' → re-consolidation）。",
+    "en": "Simulate Codex cross-session memory system: Session start triggers background task → Stage1 per-thread job claiming and extraction (raw_memory + rollout_summary) → Phase2 global consolidation (LLM incremental merge → ~/.codex/memories/) → injection into new session + pollution detection (web_search → memory_mode='polluted' → re-consolidation)."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// session.rs:836 — 会话初始化完成后立即启动\nmemories::start_memories_startup_task(\n  &sess,\n  Arc::clone(&config),\n  &session_configuration.session_source,\n);\n\n// Feature::Sqlite + Feature::MemoryTool 必须启用\n// config.memories:\n//   max_raw_memories_for_consolidation: 50\n//   max_age_days: 30\n//   min_rollout_idle_hours: 1",
+      "annotation": {
+        "zh": "session.rs:836 — 新会话启动后，memories::start_memories_startup_task() 在后台启动 Stage1 + Phase2 任务。Feature::Sqlite 和 Feature::MemoryTool 必须启用。",
+        "en": "session.rs:836 — After new session starts, memories::start_memories_startup_task() launches Stage1 + Phase2 tasks in background. Feature::Sqlite and Feature::MemoryTool must be enabled."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// state/src/runtime/memories.rs\n// claim_stage1_jobs_for_startup() 扫描条件：\n//   AND threads.memory_mode = 'enabled'\n//   AND threads.id != current_thread_id\n//   AND threads.updated_at_ms >= max_age_cutoff   (30天内)\n//   AND threads.updated_at_ms <= idle_cutoff       (闲置 ≥ 1h)\n//   AND stage1_outputs.source_updated_at < threads.updated_at\n//\n// 找到 3 个符合条件的历史线程：\n//   thread-A (updated: 2h ago, branch: main)\n//   thread-B (updated: 5h ago, branch: feat/auth)\n//   thread-C (updated: 1d ago, branch: fix/login)",
+      "annotation": {
+        "zh": "claim_stage1_jobs_for_startup() 通过 SQL 查询找到 memory_mode='enabled' 且 Stage1 输出已过期的线程。同时排除当前会话自身。",
+        "en": "claim_stage1_jobs_for_startup() finds threads with memory_mode='enabled' whose Stage1 output is stale. Excludes the current session itself."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// JOB_KIND_MEMORY_STAGE1 = \"memory_stage1\"\n// DEFAULT_RETRY_REMAINING = 3\n//\n// worker A (当前会话) 尝试争抢 thread-A：\nINSERT INTO jobs (\n  kind='memory_stage1', job_key=thread_id,\n  status='running', ownership_token='tok-abc',\n  lease_until=now+3600, retry_remaining=3,\n  input_watermark=source_updated_at\n)\nON CONFLICT DO UPDATE SET ...\nWHERE\n  (jobs.status != 'running' OR jobs.lease_until <= now)\n  AND retry_remaining > 0\n  AND running_job_count < max_running_jobs\n\n// 结果:\n// thread-A → Claimed { ownership_token: \"tok-abc\" } ✓\n// thread-B → SkippedRunning (另一 worker 持有 lease) ✗\n// thread-C → SkippedUpToDate (stage1_outputs 已是最新) ✗",
+      "annotation": {
+        "zh": "try_claim_stage1_job() 使用 SQLite 事务实现分布式 job claiming。lease 机制（lease_until）防止 worker 崩溃后 job 永久卡死。",
+        "en": "try_claim_stage1_job() implements distributed job claiming via SQLite transaction. lease_until prevents jobs from getting stuck if a worker crashes."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// 对 thread-A 执行 Stage1 提取\n// 读取 thread-A 的 rollout 文件，调用模型提取记忆\n\n// 提取结果：\nraw_memory = \"\"\"\n- 在 main 分支重构了认证模块\n- 修复了 OAuth 回调路径 bug\n- 使用 argon2 替换了 bcrypt\n\"\"\"\n\nrollout_summary = \"\"\"\n完成了认证模块重构。主要改动：\n1. src/auth.rs：拆分为 oauth.rs + local.rs\n2. 修复 callback 路径缺失 state 参数的 bug\n3. 密码哈希从 bcrypt 迁移到 argon2\n\"\"\"\n\n// 写入 SQLite + 触发 Phase2\nmark_stage1_job_succeeded(\n  thread_id, &\"tok-abc\", source_updated_at,\n  raw_memory, rollout_summary, Some(\"rollout-thread-a\"),\n).await?;\n// → 内部自动 enqueue_global_consolidation(input_watermark)",
+      "annotation": {
+        "zh": "Stage1 成功后，raw_memory 和 rollout_summary 写入 stage1_outputs 表，并自动调用 enqueue_global_consolidation() 将 Phase2 job 设为 pending。",
+        "en": "After Stage1 success, raw_memory and rollout_summary are written to stage1_outputs table, and enqueue_global_consolidation() automatically sets Phase2 job to pending."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL = \"memory_consolidate_global\"\n// MEMORY_CONSOLIDATION_JOB_KEY = \"global\" (全局单例)\n//\n// try_claim_global_phase2_job() 检查条件：\n//   input_watermark(1735000000) > last_success_watermark(1734000000)\n//   retry_remaining > 0\n//   NOT (status='running' AND lease_until > now)\n//\n// Phase2 Prompt 格式（来自 core/tests/suite/memories.rs）：\n// \"Current selected Phase 1 inputs:\"\n// \"- selected inputs this run: 1\"\n// \"- newly added since the last successful Phase 2 run: 1\"\n// \"- removed from the last successful Phase 2 run: 0\"\n// \"- [added] thread_id=thread-A, git_branch=main, cwd=/workspace/auth\"\n// \"Removed from the last successful Phase 2 selection:\"\n// \"- none\"",
+      "annotation": {
+        "zh": "Phase2 争抢全局单例 job。input_watermark 确保只有在有新 Stage1 输出时才执行 LLM 调用，避免无谓开销。",
+        "en": "Phase2 claims the global singleton job. input_watermark ensures LLM is only called when there are new Stage1 outputs, avoiding unnecessary overhead."
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// Phase2 LLM 整合完成后写入文件系统\n\n// ~/.codex/memories/raw_memories.md (合并所有 raw_memory):\n\"\"\"\n## thread-A (main, /workspace/auth, 2025-01-24)\n- 在 main 分支重构了认证模块\n- 修复了 OAuth 回调路径 bug  \n- 使用 argon2 替换了 bcrypt\n\"\"\"\n\n// ~/.codex/memories/rollout_summaries/thread-A-rollout-thread-a.md:\n\"\"\"\ngit_branch: main\ncwd: /workspace/auth\n\n完成了认证模块重构。主要改动：\n...\n\"\"\"\n\n// 标记 Phase2 成功\nmark_global_phase2_job_succeeded(\n  &ownership_token,\n  completed_watermark,\n  &selected_outputs, // 标记 selected_for_phase2=1\n).await?;",
+      "annotation": {
+        "zh": "Phase2 整合输出写入 ~/.codex/memories/ 目录。mark_global_phase2_job_succeeded() 同时更新 selected_for_phase2=1，记录本次 baseline，用于下次 Phase2 的增量 diff。",
+        "en": "Phase2 consolidation writes to ~/.codex/memories/. mark_global_phase2_job_succeeded() also sets selected_for_phase2=1 to record the baseline for incremental diff in next Phase2 run."
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "请帮我搜索一下 OAuth2 的最新规范变更",
+      "annotation": {
+        "zh": "用户请求触发了 web_search 工具调用——这将导致当前线程的记忆被标记为 polluted",
+        "en": "User request triggers a web_search tool call — this will cause the current thread's memory to be marked as polluted"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// web_search 完成后，当前线程被标记为 polluted\n// config.memories.no_memories_if_mcp_or_web_search = true\n\nmark_thread_memory_mode_polluted(\n  current_thread_id\n).await?;\n// → UPDATE threads SET memory_mode = 'polluted'\n//   WHERE id = ? AND memory_mode != 'polluted'\n//\n// 若该线程曾入选 Phase2 baseline（selected_for_phase2=1）：\n// → 自动 enqueue_global_consolidation(source_updated_at)\n//   下次 Phase2 运行时：\n//   phase2_prompt 会显示：\n//   \"- removed from the last successful Phase 2 run: 1\"\n//   \"- thread_id=current_thread_id, ...\"\n//   polluted 线程从 selected_outputs 移入 removed",
+      "annotation": {
+        "zh": "web_search 触发 mark_thread_memory_mode_polluted()。若该线程曾入选 Phase2 baseline，系统自动触发 re-consolidation，下次 Phase2 时将其从 selected 移入 removed。",
+        "en": "web_search triggers mark_thread_memory_mode_polluted(). If the thread was in Phase2 baseline, system automatically triggers re-consolidation to move it from selected to removed in next Phase2."
+      }
+    }
+  ]
+}

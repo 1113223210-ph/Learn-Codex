@@ -1,0 +1,145 @@
+{
+  "version": "ch01",
+  "title": {
+    "zh": "Agent Loop 完整运行",
+    "en": "Agent Loop Full Run"
+  },
+  "description": {
+    "zh": "模拟一次完整的 Codex turn：用户请求修复 Rust 编译错误 → run_turn() 外层循环 → try_run_sampling_request() 内层 SSE 流 → FuturesOrdered 并行执行工具 → needs_follow_up 决策 → turn 结束。每一步对应 core/src/codex/turn.rs 的实际代码路径。",
+    "en": "Simulate a complete Codex turn: user requests Rust compile fix → run_turn() outer loop → try_run_sampling_request() inner SSE stream → FuturesOrdered parallel tool execution → needs_follow_up decision → turn end."
+  },
+  "steps": [
+    {
+      "type": "user_message",
+      "content": "帮我修复 src/auth.rs 里的编译错误",
+      "annotation": {
+        "zh": "UserInput::Text 进入 run_turn()，input 非空，开始执行",
+        "en": "UserInput::Text enters run_turn(), input non-empty, execution begins"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "run_pre_sampling_compact()\n→ total_tokens: 312 / limit: 128000\n→ 无需压缩，继续",
+      "annotation": {
+        "zh": "turn.rs:147 — 预紧缩检查，Token 量远低于阈值",
+        "en": "turn.rs:147 — Pre-compaction check, token count well below threshold"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "sess.clone_history().for_prompt(input_modalities)\n→ ResponseItem[] { len: 1 }\n  [0] UserMessage: \"帮我修复 src/auth.rs...\"",
+      "annotation": {
+        "zh": "turn.rs:436 — 构建采样输入，将历史转为 ResponseItem 列表",
+        "en": "turn.rs:436 — Build sampling input, convert history to ResponseItem list"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "run_sampling_request() 进入重试循环\n→ retries = 0 / max_retries = 3\n→ 调用 try_run_sampling_request()",
+      "annotation": {
+        "zh": "turn.rs:1028 — 重试包装层，WebSocket 传输",
+        "en": "turn.rs:1028 — Retry wrapper, WebSocket transport"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "client_session.stream() → SSE 连接建立\nResponseEvent::Created",
+      "annotation": {
+        "zh": "turn.rs:1846 — Responses API SSE 流开始，or_cancel() 包装",
+        "en": "turn.rs:1846 — Responses API SSE stream started, or_cancel() wrapped"
+      }
+    },
+    {
+      "type": "assistant_text",
+      "content": "我来检查 src/auth.rs 的编译错误。先运行 cargo check 看看具体报错。",
+      "annotation": {
+        "zh": "OutputItemDelta 事件累积 → AssistantTextStreamParser 处理 → 实时推送给 TUI",
+        "en": "OutputItemDelta events accumulate → AssistantTextStreamParser processes → real-time push to TUI"
+      }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "shell",
+      "content": "cargo check 2>&1 | head -30",
+      "annotation": {
+        "zh": "turn.rs:1955 — OutputItemDone(FunctionCall { name: \"shell\", call_id: \"call_01\" }) → in_flight.push_back(shell_future)  非阻塞！",
+        "en": "turn.rs:1955 — OutputItemDone(FunctionCall { name: \"shell\", call_id: \"call_01\" }) → in_flight.push_back(shell_future) non-blocking!"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "FuturesOrdered polling...\nshell_future.await → Ok(ExitStatus(0))\n\nstdout:\n  error[E0308]: mismatched types\n   --> src/auth.rs:42:20\n    |\n 42 |     let token = generate_token(user_id);\n    |                 ^^^^^^^^^^^^^^ expected `&str`, found `String`",
+      "annotation": {
+        "zh": "turn.rs:1961 — needs_follow_up |= output_result.needs_follow_up；drain_in_flight() 在 SSE 流结束后（turn.rs:2176）统一收割所有工具 Future，写入 session history",
+        "en": "turn.rs:1961 — needs_follow_up |= output_result.needs_follow_up; drain_in_flight() at turn.rs:2176 harvests all tool futures after SSE stream ends, writes to session history"
+      }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "shell",
+      "content": "error[E0308]: mismatched types\n --> src/auth.rs:42:20\n  |\n42|     let token = generate_token(user_id);\n  |                 ^^^^^^^^^^^^^^\n  expected `&str`, found `String`\n\nFor more information: rustc --explain E0308",
+      "annotation": {
+        "zh": "ResponseInputItem::ToolResult 追加到 session history，needs_follow_up = true",
+        "en": "ResponseInputItem::ToolResult appended to session history, needs_follow_up = true"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "SamplingRequestResult {\n  needs_follow_up: true,\n  last_agent_message: None,\n}\n→ total_tokens: 847 < auto_compact_limit\n→ continue 外层循环",
+      "annotation": {
+        "zh": "turn.rs:466 — 有工具调用需要回传，继续外层循环进行第二次采样",
+        "en": "turn.rs:466 — Tool calls need to be sent back, continue outer loop for second sampling"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "=== 外层循环 iter #2 ===\nclone_history().for_prompt()\n→ ResponseItem[] { len: 4 }\n  [0] UserMessage\n  [1] AssistantMessage (含 FunctionCall)\n  [2] ToolResult { call_id: call_01 }\n→ run_sampling_request()",
+      "annotation": {
+        "zh": "turn.rs:436 — 第二次构建采样输入，工具结果已在历史中，模型将看到完整上下文",
+        "en": "turn.rs:436 — Second sampling input build, tool result in history, model sees full context"
+      }
+    },
+    {
+      "type": "assistant_text",
+      "content": "找到了。错误在 auth.rs:42，generate_token() 返回 String，但函数签名期望 &str。修复方法是加 .as_str() 转换。",
+      "annotation": {
+        "zh": "模型看到工具结果后分析原因，通过 OutputItemDelta 流式输出",
+        "en": "Model analyzes cause after seeing tool result, streaming via OutputItemDelta"
+      }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "apply_patch",
+      "content": "*** Begin Patch\n*** Update File: src/auth.rs\n@@ fn verify_user\n-    let token = generate_token(user_id);\n+    let token = generate_token(user_id);\n+    let token = token.as_str();\n*** End Patch",
+      "annotation": {
+        "zh": "第二个工具调用 call_02 → in_flight.push_back(patch_future)，apply_patch 是 Codex 内置的文件编辑工具（ApplyPatchHandler，handlers/apply_patch.rs）",
+        "en": "Second tool call call_02 → in_flight.push_back(patch_future), apply_patch is Codex built-in file edit tool (ApplyPatchHandler, handlers/apply_patch.rs)"
+      }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "apply_patch",
+      "content": "Applied patch to src/auth.rs: 1 file changed",
+      "annotation": {
+        "zh": "drain_in_flight() 收割 patch_future 结果，record_conversation_items() 写回 history",
+        "en": "drain_in_flight() harvests patch_future result, record_conversation_items() writes back to history"
+      }
+    },
+    {
+      "type": "assistant_text",
+      "content": "已修复。src/auth.rs:42 的 generate_token(user_id) 改为 generate_token(user_id).as_str()，将 String 借用为 &str 满足函数签名要求。\n\n建议再跑一次 cargo check 确认无误。",
+      "annotation": {
+        "zh": "模型输出最终消息，stop_reason = end_turn，needs_follow_up = false",
+        "en": "Model outputs final message, stop_reason = end_turn, needs_follow_up = false"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "SamplingRequestResult {\n  needs_follow_up: false,\n  last_agent_message: Some(\"已修复。src/auth.rs:42...\"),\n}\n→ sess.hooks().run_stop(...).await\n→ stop_hook: 无注入\n→ break — turn 完成",
+      "annotation": {
+        "zh": "turn.rs:510 — needs_follow_up = false，运行 stop hooks 后 break 退出外层循环",
+        "en": "turn.rs:510 — needs_follow_up = false, run stop hooks then break outer loop"
+      }
+    }
+  ]
+}

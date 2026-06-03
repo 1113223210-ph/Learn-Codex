@@ -1,0 +1,110 @@
+{
+  "version": "ch06",
+  "title": { "zh": "ToolOrchestrator 三阶段编排", "en": "ToolOrchestrator Three-Phase Orchestration" },
+  "description": {
+    "zh": "模拟 orchestrator.rs 对工具调用的完整三阶段处理：Phase 1 Approval（ExecApprovalRequirement）→ Phase 2 First Attempt（沙箱执行）→ Phase 3 Escalation（SandboxDenied 升级重试）。包含 Forbidden 直接拒绝和沙箱拒绝后的升级流程。",
+    "en": "Simulate orchestrator.rs full three-phase tool call handling: Phase 1 Approval → Phase 2 First Attempt (sandboxed) → Phase 3 Escalation (SandboxDenied retry). Covers Forbidden direct reject and sandbox escalation."
+  },
+  "steps": [
+    {
+      "type": "user_message",
+      "content": "帮我检查 Rust 项目能否编译",
+      "annotation": {
+        "zh": "工具调用进入 ToolOrchestrator::run()，approval_policy = AskForApproval::OnFailure",
+        "en": "Tool call enters ToolOrchestrator::run(), approval_policy = AskForApproval::OnFailure"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// orchestrator.rs — Phase 1: Approval\n\nlet requirement = tool\n  .exec_approval_requirement(req)\n  .unwrap_or_else(|| {\n    default_exec_approval_requirement(\n      AskForApproval::OnFailure,        // 策略\n      &FileSystemSandboxKind::Restricted, // 沙箱类型\n    )\n  });\n\n// OnFailure + Restricted → Skip\n// → match requirement {\n//     ExecApprovalRequirement::Skip { .. } =>\n//       otel.tool_decision(otel_tn, otel_ci,\n//         &ReviewDecision::Approved,\n//         ToolDecisionSource::Config),\n//   }\n// already_approved = false（Config 决定，非用户）",
+      "annotation": {
+        "zh": "orchestrator.rs:Phase 1 — default_exec_approval_requirement() 返回 Skip，自动批准，记录 OTEL 遥测",
+        "en": "orchestrator.rs:Phase 1 — default_exec_approval_requirement() returns Skip, auto-approved, OTEL telemetry recorded"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// orchestrator.rs — Phase 2: First Attempt\n\nlet initial_sandbox = self.sandbox.select_initial(\n  &turn_ctx.file_system_sandbox_policy,\n  turn_ctx.network_sandbox_policy,\n  tool.sandbox_preference(),  // Auto\n  turn_ctx.windows_sandbox_level,\n  managed_network_active,     // false\n);\n// → SandboxType::LinuxSeccomp\n\nlet initial_attempt = SandboxAttempt {\n  sandbox: SandboxType::LinuxSeccomp,\n  policy: &turn_ctx.sandbox_policy,\n  ..\n};\n\nSelf::run_attempt(tool, req, tool_ctx,\n  &initial_attempt, managed_network_active).await\n// → (Ok(ExecToolCallOutput { exit_code: 0 }), None)",
+      "annotation": {
+        "zh": "orchestrator.rs:Phase 2 — SandboxManager 选择 LinuxSeccomp，run_attempt() 执行，返回 Ok",
+        "en": "orchestrator.rs:Phase 2 — SandboxManager selects LinuxSeccomp, run_attempt() executes, returns Ok"
+      }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "shell",
+      "content": "cargo check",
+      "annotation": {
+        "zh": "ExecApprovalRequirement::Skip → Phase 3 不触发。OrchestratorRunResult { output, deferred_network_approval: None }",
+        "en": "ExecApprovalRequirement::Skip → Phase 3 not triggered. OrchestratorRunResult { output, deferred_network_approval: None }"
+      }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "shell",
+      "content": "   Compiling myapp v0.1.0\n    Finished dev [unoptimized] target(s) in 2.1s",
+      "annotation": {
+        "zh": "Phase 1→2 完成，无需升级。结果通过 FuturesOrdered 写回 session history",
+        "en": "Phase 1→2 complete, no escalation needed. Result written to session history via FuturesOrdered"
+      }
+    },
+    {
+      "type": "user_message",
+      "content": "删除临时目录 /tmp/build-cache",
+      "annotation": {
+        "zh": "模型生成 rm -rf /tmp/build-cache，该命令会触发危险命令检测",
+        "en": "Model generates rm -rf /tmp/build-cache, which triggers dangerous command detection"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// orchestrator.rs — Phase 1: Approval\n\n// exec_policy.rs: check_command([\"rm\",\"-rf\",\"/tmp/build-cache\"])\n// → command_might_be_dangerous() → true (rm -rf)\n// → Decision::Prompt\n//\n// default_exec_approval_requirement(\n//   AskForApproval::UnlessTrusted,\n//   FileSystemSandboxKind::Restricted,\n// ) → ExecApprovalRequirement::NeedsApproval {\n//     reason: Some(\"rm -rf 需要批准\"),\n//     proposed_execpolicy_amendment: None,\n//   }\n\nlet decision = tool.start_approval_async(\n  req,\n  ApprovalCtx {\n    retry_reason: Some(\"rm -rf 需要批准\"),\n    ..\n  }\n).await;\n// → 等待 TUI 用户响应",
+      "annotation": {
+        "zh": "orchestrator.rs — rm -rf 触发 NeedsApproval，start_approval_async() 向 TUI 发送 ExecApprovalRequest，阻塞等待用户",
+        "en": "orchestrator.rs — rm -rf triggers NeedsApproval, start_approval_async() sends ExecApprovalRequest to TUI, blocking"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// TUI 显示审批界面:\n// ┌─────────────────────────────────────┐\n// │ 工具调用需要批准                     │\n// │ 命令: rm -rf /tmp/build-cache       │\n// │ 原因: rm -rf 需要批准               │\n// │                                     │\n// │ [批准] [批准(本次session)] [拒绝]   │\n// └─────────────────────────────────────┘\n\n// 用户选择: ReviewDecision::ApprovedForSession\n// → match decision {\n//     ReviewDecision::ApprovedForSession => {}\n//     // 继续执行，already_approved = true\n//   }\n// otel.tool_decision(..., ToolDecisionSource::User)",
+      "annotation": {
+        "zh": "用户选择 ApprovedForSession：本次 session 内相同命令前缀不再询问，OTEL 记录 User 来源的决策",
+        "en": "User selects ApprovedForSession: same command prefix auto-approved for rest of session, OTEL logs User-sourced decision"
+      }
+    },
+    {
+      "type": "tool_call",
+      "toolName": "shell",
+      "content": "rm -rf /tmp/build-cache",
+      "annotation": {
+        "zh": "Phase 1 Approved → Phase 2: LinuxSeccomp 沙箱执行。/tmp 路径在 WorkspaceWrite 策略外，若沙箱拒绝则进入 Phase 3",
+        "en": "Phase 1 Approved → Phase 2: LinuxSeccomp sandbox executes. /tmp outside WorkspaceWrite policy, sandbox may deny"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// Phase 2 结果: SandboxErr::Denied\n// → is_likely_sandbox_denied() 检测到 /tmp 路径\n//   超出 WorkspaceWrite.writable_roots\n\n// orchestrator.rs 匹配:\n// Err(ToolError::Codex(CodexErr::Sandbox(\n//   SandboxErr::Denied { output, .. }\n// )))\n\n// escalate_on_failure() → true\n// wants_no_sandbox_approval(UnlessTrusted) → true\n\n// build_denial_reason_from_output():\n// → \"command failed; retry without sandbox?\"\n\n// bypass_retry_approval = false (已批准但需再次确认升级)\n// 再次调用 start_approval_async() 询问用户",
+      "annotation": {
+        "zh": "orchestrator.rs — 沙箱拒绝进入 Phase 3：escalate_on_failure=true，提示用户是否以 SandboxType::None 重试",
+        "en": "orchestrator.rs — sandbox denial enters Phase 3: escalate_on_failure=true, asks user whether to retry without sandbox"
+      }
+    },
+    {
+      "type": "system_event",
+      "content": "// Phase 3: Escalation retry\n// 用户再次批准后:\n\nlet escalated_attempt = SandboxAttempt {\n  sandbox: SandboxType::None, // 移除沙箱限制\n  policy: &turn_ctx.sandbox_policy,\n  ..\n};\n\nSelf::run_attempt(tool, req, tool_ctx,\n  &escalated_attempt,\n  managed_network_active\n).await\n// → (Ok(ExecToolCallOutput { exit_code: 0 }), None)\n\n// OrchestratorRunResult {\n//   output: ExecToolCallOutput { exit_code: 0 },\n//   deferred_network_approval: None,\n// }",
+      "annotation": {
+        "zh": "orchestrator.rs — Phase 3 以 SandboxType::None 重试，移除沙箱限制后命令成功执行",
+        "en": "orchestrator.rs — Phase 3 retries with SandboxType::None, command succeeds without sandbox restriction"
+      }
+    },
+    {
+      "type": "tool_result",
+      "toolName": "shell",
+      "content": "已删除 /tmp/build-cache (共 234 个文件)",
+      "annotation": {
+        "zh": "Phase 3 重试成功。OrchestratorRunResult 返回，结果写入 session history",
+        "en": "Phase 3 retry succeeded. OrchestratorRunResult returned, result written to session history"
+      }
+    }
+  ]
+}

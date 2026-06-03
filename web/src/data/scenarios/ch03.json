@@ -1,0 +1,55 @@
+{
+  "version": "ch03",
+  "title": { "zh": "Prompt 组装管线完整流程", "en": "Prompt Assembly Pipeline" },
+  "description": {
+    "zh": "模拟 build_initial_context() 的完整执行：base_instructions 优先级解析 → developer_sections 逐层追加（权限指令/AGENTS.md/skills/memory） → contextual_user_sections 组装 → 合并为 Prompt 结构 → 发送给 Responses API。每步对应 codex.rs:2306 的实际代码路径。",
+    "en": "Simulate build_initial_context() full execution: base_instructions priority resolution → developer_sections layered assembly → contextual_user_sections → Prompt struct → Responses API."
+  },
+  "steps": [
+    {
+      "type": "system_event",
+      "content": "// codex.rs:2306 每次 run_turn() 都调用\npub(crate) async fn build_initial_context(\n  &self,\n  turn_context: &TurnContext,\n) -> Vec<ResponseItem> {\n  let mut developer_sections = Vec::with_capacity(8);\n  let mut contextual_user_sections = Vec::with_capacity(2);\n  ..",
+      "annotation": { "zh": "Prompt 不是缓存的——每次 turn 都重新组装，确保环境变更实时生效", "en": "Prompt is not cached — reassembled every turn to reflect live environment changes" }
+    },
+    {
+      "type": "system_event",
+      "content": "// codex.rs:544 — 三级优先级\nlet base_instructions = config.base_instructions\n  .clone()\n  // ① 用户显式覆盖\n  .or_else(|| conversation_history\n    .get_base_instructions()\n    .map(|s| s.text))\n  // ② 历史会话保存的 base_instructions\n  .unwrap_or_else(||\n    model_info.get_model_instructions(config.personality)\n  );\n  // ③ models-manager/prompt.md (默认)",
+      "annotation": { "zh": "base_instructions 三级优先级，默认读 prompt.md（500+ 行的模型人格声明）", "en": "base_instructions three-level priority, defaults to prompt.md (500+ lines model personality)" }
+    },
+    {
+      "type": "system_event",
+      "content": "// codex.rs:2339 — 权限指令注入\nif config.include_permissions_instructions {\n  developer_sections.push(\n    DeveloperInstructions::from_policy(\n      sandbox_policy,   // e.g. WorkspaceWrite\n      approval_policy,  // e.g. UnlessTrusted\n      approvals_reviewer,\n      exec_policy.current().as_ref(),\n      &turn_context.cwd,\n      features.enabled(Feature::ExecPermissionApprovals),\n      features.enabled(Feature::RequestPermissionsTool),  // ← 第7个参数\n    ).into_text(),\n  );\n}",
+      "annotation": { "zh": "permission 指令序列化为 <permissions instructions>...</permissions instructions>，告诉模型哪些操作需要申请批准", "en": "Permission instructions serialized as XML tags, telling model which operations need approval" }
+    },
+    {
+      "type": "system_event",
+      "content": "// codex.rs:2359 — AGENTS.md + developer 指令\nif !separate_guardian_developer_message\n  && let Some(instr) = turn_context\n    .developer_instructions.as_deref()\n  && !instr.is_empty()\n{\n  developer_sections.push(instr.to_string());\n}\n// 来源：\n// - AGENTS.md 文件内容（多级查找）\n// - CLI --developer-instructions 参数\n// - app-server 客户端注入",
+      "annotation": { "zh": "AGENTS.md 的内容在这里注入 developer_sections，不是单独的消息——最终合并进同一条 DeveloperMessage", "en": "AGENTS.md content injected here into developer_sections, merged into one DeveloperMessage" }
+    },
+    {
+      "type": "system_event",
+      "content": "// codex.rs:2417 — Skills 注入\nlet implicit_skills = turn_context\n  .turn_skills\n  .outcome\n  .allowed_skills_for_implicit_invocation();\n\nif let Some(skills_section) =\n  render_skills_section(&implicit_skills)\n{\n  developer_sections.push(skills_section);\n}\n// render_skills_section() 输出:\n// <skills_instructions>\n//   ## Skills\n//   - skill_name: description (file: path)\n//   ### How to use skills\n//   ...\n// </skills_instructions>",
+      "annotation": { "zh": "core-skills/src/render.rs:5 — skills 列表和使用规则作为 XML 块追加到 developer_sections", "en": "core-skills/src/render.rs:5 — skills list and usage rules appended as XML block" }
+    },
+    {
+      "type": "system_event",
+      "content": "// codex.rs:2440 — user 侧上下文\nif let Some(user_instructions) =\n  turn_context.user_instructions.as_deref()\n{\n  contextual_user_sections.push(\n    UserInstructions { text: .., directory: .. }\n      .serialize_to_text(),\n  );\n}\nif config.include_environment_context {\n  contextual_user_sections.push(\n    EnvironmentContext::from_turn_context(turn_context, shell)\n      .serialize_to_xml(),\n  );\n  // 输出示例：\n  // <environment_context>\n  //   <cwd>/home/user/myproject</cwd>\n  //   <shell>zsh</shell>\n  //   <current_date>2026-05-28</current_date>\n  //   <timezone>Asia/Shanghai</timezone>\n  // </environment_context>\n}",
+      "annotation": { "zh": "environment_context.rs:171 — EnvironmentContext 序列化为 XML，告知模型当前工作目录、Shell 类型、日期时区", "en": "environment_context.rs:171 — EnvironmentContext serialized to XML with cwd, shell, date, timezone" }
+    },
+    {
+      "type": "system_event",
+      "content": "// codex.rs:2462 — 合并为 ResponseItem[]\nlet mut items = Vec::with_capacity(3);\n\n// 所有 developer_sections → 一条 DeveloperMessage\nif let Some(dev_msg) =\n  build_developer_update_item(developer_sections)\n{\n  items.push(dev_msg);\n}\n\n// 所有 user_sections → 一条 UserMessage\nif let Some(user_msg) =\n  build_contextual_user_message(contextual_user_sections)\n{\n  items.push(user_msg);\n}\n\nitems  // → Vec<ResponseItem> (2~3条)",
+      "annotation": { "zh": "无论 developer_sections 有多少层，最终只合并为 1 条 DeveloperMessage 发给模型", "en": "No matter how many developer_sections layers, all merged into 1 DeveloperMessage to model" }
+    },
+    {
+      "type": "system_event",
+      "content": "// turn.rs:967 — build_prompt() 组装最终 Prompt\nPrompt {\n  input,            // 会话历史 + 上述 ResponseItem[]\n  tools: router.model_visible_specs(),  // 工具 schema\n  parallel_tool_calls: model_info\n    .supports_parallel_tool_calls,\n  base_instructions, // models-manager/prompt.md\n  personality: turn_context.personality,\n  output_schema: turn_context\n    .final_output_json_schema.clone(),\n}",
+      "annotation": { "zh": "turn.rs:967 — Prompt 是最终传入 client_session.stream() 的完整结构", "en": "turn.rs:967 — Prompt is the complete structure passed into client_session.stream()" }
+    },
+    {
+      "type": "assistant_text",
+      "content": "我会先检查 src/auth.rs 的类型错误。当前环境上下文显示：\n- CWD: /home/user/myproject\n- Shell: zsh\n- 权限策略: WorkspaceWrite（可直接编辑文件，无需申请批准）\n- Skills: rust-debugging 可用（已加载 SKILL.md）\n\n开始执行 cargo check...",
+      "annotation": { "zh": "模型接收到完整 Prompt 后的回复——可以看到它读取了 EnvironmentContext 中的 cwd/shell 和 DeveloperInstructions 中的 sandbox_policy", "en": "Model reply after receiving full Prompt — it read EnvironmentContext and DeveloperInstructions" }
+    }
+  ]
+}
