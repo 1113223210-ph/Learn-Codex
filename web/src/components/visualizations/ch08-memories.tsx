@@ -704,23 +704,13 @@ export default function MemoriesVisualization() {
             触发 re-consolidation
           </text>
 
-          {/* 箭头：enqueue → Phase2 claim（垂直） */}
-          <line
-            x1="1166"
-            y1="104"
-            x2="1166"
-            y2="166"
+          {/* 箭头：enqueue → Phase2 claim（下 → 左 → 下） */}
+          <path
+            d="M 1166 104 L 1166 147 L 912 147 L 912 190"
+            fill="none"
             stroke="#8b5cf6"
             strokeWidth={1.5}
             strokeDasharray="4 3"
-          />
-          <line
-            x1="1166"
-            y1="166"
-            x2="912"
-            y2="200"
-            stroke="#8b5cf6"
-            strokeWidth={1.5}
             markerEnd="url(#m8v)"
           />
 
