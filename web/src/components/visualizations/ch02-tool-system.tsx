@@ -31,7 +31,7 @@ const NODES: N[] = [
   { id: "p_cu",  label: "自定义工具",    sublabel: "Custom { input: Value }",     x: 150, y: 540, w: 210, h: 54, color: "yellow" },
 
   // ── 右列：Handler 注册表（x=1120, w=224, h=54, step=105）
-  { id: "h_sh",  label: "Shell 执行器",      sublabel: "ShellHandler  shell/unified_exec", x: 1120, y: 180, w: 224, h: 54, color: "red"    },
+  { id: "h_sh",  label: "Shell 执行器",      sublabel: "ShellHandler  shell/local_shell",  x: 1120, y: 180, w: 224, h: 54, color: "red"    },
   { id: "h_ap",  label: "补丁应用器",        sublabel: "ApplyPatchHandler  apply_patch",   x: 1120, y: 285, w: 224, h: 54, color: "red"    },
   { id: "h_mc",  label: "MCP 转发器",        sublabel: "McpHandler  mcp/mcp_resource",     x: 1120, y: 390, w: 224, h: 54, color: "purple" },
   { id: "h_ld",  label: "目录列举器",        sublabel: "ListDirHandler  list_dir",         x: 1120, y: 495, w: 224, h: 54, color: "orange" },
@@ -170,7 +170,7 @@ const EVENTS: string[][] = [
 const STEP_INFO = [
   { title: "工具系统三层架构", desc: "ToolRouter（分发）→ ToolCallRuntime（并行控制）→ ToolRegistry（handler 注册表）。每层职责独立，合在一起构成完整的工具调用管线。", file: "core/src/tools/" },
   { title: "FunctionCall / CustomToolCall 到达", desc: "ResponseEvent::OutputItemDone 触发，item 类型可以是 FunctionCall、CustomToolCall、ToolSearchCall 或 LocalShellCall。build_tool_call() 统一转换为 ToolCall。", file: "router.rs:172" },
-  { title: "build_tool_call()：4 种 payload 类型", desc: "FunctionCall → 先查 MCP 工具表，匹配到则 Mcp payload，否则 Function payload。CustomToolCall → Custom payload。LocalShellCall → LocalShell payload。ToolSearchCall(client) → ToolSearch payload。", file: "router.rs:176" },
+  { title: "build_tool_call()：解析 payload 类型", desc: "FunctionCall → 先查 MCP 工具表，匹配到则 Mcp payload，否则 Function payload。CustomToolCall → Custom payload。LocalShellCall → LocalShell payload。ToolSearchCall(client) → ToolSearch payload。共 5 种 payload 类型，可视化展示最常用的 4 种。", file: "router.rs:176" },
   { title: "ToolCallRuntime：tokio::spawn 独立 Task", desc: "每个工具调用在独立的 Tokio task 中运行，用 AbortOnDropHandle 包装确保 task 在 Runtime 被 drop 时自动终止。tokio::select! 同时监听 cancellation_token，用户中止立即生效。", file: "parallel.rs:106" },
   { title: "RwLock：并行 vs 串行执行控制", desc: "parallel_execution: Arc<RwLock<()>> 是并发控制的核心。支持并行的工具（tool_supports_parallel=true）取 read lock，可同时运行；不支持的取 write lock，独占执行。shell 默认不支持并行。", file: "parallel.rs:115" },
   { title: "ToolRegistry::dispatch_any()：Handler 查找", desc: "handlers: HashMap<ToolName, Arc<dyn AnyToolHandler>>，O(1) 查找。执行前运行 run_pre_tool_use_hooks()，执行后运行 run_post_tool_use_hooks()，记录 OTEL telemetry。", file: "registry.rs:237" },
