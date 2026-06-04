@@ -382,8 +382,8 @@ export default function AgentLoopVisualization() {
           <AnimatePresence>
             {viz.currentStep >= 10 && (
               <motion.g initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                <rect x={26} y={50} width={100} height={28} rx={5} fill="#2e1065" stroke="#a855f7" strokeWidth={1.2} />
-                <text x={76} y={68} textAnchor="middle" fontSize={15} fontFamily="monospace" fill="#a855f7">外层第2轮</text>
+                <rect x={890} y={44} width={100} height={28} rx={5} fill="#2e1065" stroke="#a855f7" strokeWidth={1.2} />
+                <text x={940} y={62} textAnchor="middle" fontSize={15} fontFamily="monospace" fill="#a855f7">外层第2轮</text>
               </motion.g>
             )}
           </AnimatePresence>
