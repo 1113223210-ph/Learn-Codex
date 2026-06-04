@@ -35,8 +35,8 @@ const NODES: NodeDef[] = [
   { id: "exit",    label: "timed_out == false?",      sublabel: "",                                              x: 620,  y: 400, w: 290, h: 76, shape: "diamond", color: "yellow" },
 
   // ── 分支
-  { id: "sigkill", label: "强制终止进程",         sublabel: "kill_process_group() · 超时码 192",             x: 190,  y: 494, w: 220, h: 56, color: "red"    },
-  { id: "result",  label: "聚合输出，返回结果",    sublabel: "finalize_exec_result() → ExecToolCallOutput",   x: 1070, y: 494, w: 300, h: 56, color: "green"  },
+  { id: "sigkill", label: "强制终止进程",         sublabel: "kill_process_group() · 超时码 192",             x: 190,  y: 560, w: 220, h: 56, color: "red"    },
+  { id: "result",  label: "聚合输出，返回结果",    sublabel: "finalize_exec_result() → ExecToolCallOutput",   x: 1070, y: 560, w: 300, h: 56, color: "green"  },
 ];
 
 const COLOR_MAP = {
@@ -161,9 +161,9 @@ export default function ShellExecutionVisualization() {
         </div>
 
         <svg
-          viewBox="0 0 1280 530"
+          viewBox="0 0 1280 620"
           className="w-full rounded-md border border-zinc-800 bg-zinc-950"
-          style={{ maxHeight: "510px" }}
+          style={{ maxHeight: "600px" }}
         >
           <defs>
             {(Object.keys(COLOR_MAP) as Array<keyof typeof COLOR_MAP>).map(c => (
@@ -182,7 +182,7 @@ export default function ShellExecutionVisualization() {
           </defs>
 
           {/* 外层 process_exec_tool_call 标注 */}
-          <motion.rect x="8" y="10" width="1264" height="510" rx="14"
+          <motion.rect x="8" y="10" width="1264" height="590" rx="14"
             fill="none" strokeDasharray="8 5" strokeWidth={2}
             animate={{ stroke: viz.currentStep >= 1 ? "#f97316" : "#f9731655" }}
             transition={{ duration: 0.5 }} />
