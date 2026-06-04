@@ -302,8 +302,7 @@ export default function ToolSystemVisualization() {
                   fill="none" stroke="#10b981" strokeWidth={2.5} strokeDasharray="5 3"
                   markerEnd="url(#m2-green)"
                 />
-                 <text x={936} y={340} fontSize={16} fontFamily="monospace" fill="#10b981" textAnchor="middle"
-                  transform="rotate(90,936,340)">工具结果 → 写入对话历史 → 下轮继续</text>
+                 <text x={640} y={22} fontSize={14} fontFamily="monospace" fill="#10b981" textAnchor="middle">工具结果 → 写入对话历史 → 下轮继续</text>
               </motion.g>
             )}
           </AnimatePresence>
