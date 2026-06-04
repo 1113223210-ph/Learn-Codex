@@ -189,15 +189,13 @@ function edgePath(fromId: string, toId: string): string {
   if (fromId === "follow" && toId === "compact") {
     return `M ${fx+fw/2} ${fy} L ${tx} ${fy} L ${tx} ${ty-th/2}`;
   }
-  // compact → build（环回：右沿 x=1220 → 上 → build 右边入，与 follow→build 共线）
+  // compact → build（环回：top → 右沿 x=1225 → 上到 build 中线 → 从右入）
   if (fromId === "compact" && toId === "build") {
-    const rx = 1220;
-    return `M ${fx} ${fy-fh/2} L ${rx} ${fy-fh/2} L ${rx} 18 L ${tx+tw/2} 18 L ${tx+tw/2} ${ty}`;
+    return `M ${fx} ${fy-fh/2} L 1225 ${fy-fh/2} L 1225 ${ty} L ${tx+tw/2} ${ty}`;
   }
-  // follow → build（直接继续：右沿 x=1220 → 上 → build 右边入）
+  // follow → build（直接继续：右顶点 → 右沿 x=1220 → 上到 build 中线 → 从右入）
   if (fromId === "follow" && toId === "build") {
-    const rx = 1220;
-    return `M ${fx+fw/2} ${fy} L ${rx} ${fy} L ${rx} 18 L ${tx+tw/2} 18 L ${tx+tw/2} ${ty}`;
+    return `M ${fx+fw/2} ${fy} L 1220 ${fy} L 1220 ${ty} L ${tx+tw/2} ${ty}`;
   }
   return `M ${fx} ${fy+fh/2} L ${tx} ${ty-th/2}`;
 }
@@ -293,17 +291,17 @@ export default function AgentLoopVisualization() {
                 {label && active && (
                   <motion.text
                      x={
-                      from === "compact"                      ? 1160 :
+                      from === "compact"                      ? 1140 :
                       from === "follow" && to === "done"      ? 346  :
-                      from === "follow" && to === "build"     ? 1178 :
+                      from === "follow" && to === "build"     ? 1000 :
                       from === "follow" && to === "compact"   ? 944  :
                       from === "follow"                       ? 540  :
                       from === "stream" && to === "inflight"  ? 816  :
                       (getNode(from).x + getNode(to).x) / 2
                     }
                     y={
-                      from === "compact"                      ? 430  :
-                      from === "follow" && to === "build"     ? 340  :
+                      from === "compact"                      ? 525  :
+                      from === "follow" && to === "build"     ? 541  :
                       from === "follow"                       ? 540  :
                       from === "stream" && to === "inflight"  ? 264  :
                       (getNode(from).y + getNode(to).y) / 2 - 6
